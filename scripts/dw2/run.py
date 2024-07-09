@@ -42,27 +42,34 @@ def time_dependent_potential(
         c=0.9, 
         d0=4.0,
         time=0.0,
-        schedule=None,
+        schedule_gaussian=None,
+        schedule_a=None,
+        schedule_b=None,
+        schedule_c=None,
 ):
     gaussian_potential = jax.scipy.stats.norm.logpdf(x).sum(-1).sum(-1).mean()
-    gaussian_potential = coefficient(1 - time, schedule[0], schedule[1]) * gaussian_potential
+    gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
     a_term = a * (x - d0)
     b_term = b * (x - d0) ** 2
     c_term = c * (x - d0) ** 4
 
-    a_term = a_term * coefficient(time, schedule[2], schedule[3])
-    b_term = b_term * coefficient(time, schedule[4], schedule[5])
-    c_term = c_term * coefficient(time, schedule[6], schedule[7])
+    a_term = a_term * schedule_a(time)
+    b_term = b_term * schedule_b(time)
+    c_term = c_term * schedule_c(time)
 
     energy = (1 / (2 * tao)) * (a_term + b_term + c_term)
     return energy.sum()
 
-def loss_fn(schedule, sampler_params, x, key):
+def loss_fn(schedules, sampler_params, x, key):
+    schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
     momentum0 = jax.random.normal(key, x.shape)
     _time_dependent_potential = partial(
         time_dependent_potential,
-        schedule=schedule,
+        schedule_gaussian=schedule_gaussian,
+        schedule_a=schedule_a,
+        schedule_b=schedule_b,
+        schedule_c=schedule_c,
     )
     sampler = HamiltonianMonteCarlo(
         potential=_time_dependent_potential,
@@ -79,7 +86,14 @@ def run(args):
     data_val = jnp.load(args.data_val)
     data_test = jnp.load(args.data_test)
 
-    schedule = jnp.ones(8)
+    key = jax.random.PRNGKey(2666)
+    key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
+    from lean.schedules import SinRBFSchedule
+    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
+    schedule_a = SinRBFSchedule.init(key_a, 100)
+    schedule_b = SinRBFSchedule.init(key_b, 100)
+    schedule_c = SinRBFSchedule.init(key_c, 100)
+    schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
 
     import optax
     optimizer = optax.adam(1e-3)
@@ -91,20 +105,20 @@ def run(args):
     
     key = jax.random.PRNGKey(2666)
 
-    def step(schedule, opt_state, data_train, key):
+    def step(schedules, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            schedule, sampler_args, data_train, subkey,
+            schedules, sampler_args, data_train, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedule = optax.apply_updates(schedule, updates)
-        return schedule, opt_state, loss, key
+        schedules = optax.apply_updates(schedules, updates)
+        return schedules, opt_state, loss, key
     
     step = jax.jit(step)
     
     for _ in range(100000):
-        schedule, opt_state, loss, key = step(
-            schedule, opt_state, data_train, key
+        schedules, opt_state, loss, key = step(
+            schedules, opt_state, data_train, key
         )
         print(loss)
 
