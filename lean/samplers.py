@@ -11,9 +11,6 @@ class HamiltonianMonteCarlo(NamedTuple):
     potential : Callable
         Energy function.
 
-    kinetic : Callable
-        Kinetic energy function.
-
     integrator : Callable
         Integrator function.
 
@@ -21,7 +18,6 @@ class HamiltonianMonteCarlo(NamedTuple):
         Number of steps to take in the leapfrog integration.
     """
     potential: Callable
-    kinetic: Callable
     step_size: float
     steps: int
 
