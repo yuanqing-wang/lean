@@ -4,9 +4,8 @@ def test_hmc():
     position = jax.random.normal(jax.random.PRNGKey(0), (100,))
     momentum = jax.random.normal(jax.random.PRNGKey(0), (100,))
     potential = lambda x, time: 0.5 * jnp.sum(x ** 2)
-    kinetic = lambda x: 0.5 * jnp.sum(x ** 2)
     from lean.samplers import HamiltonianMonteCarlo
-    sampler = HamiltonianMonteCarlo(potential, kinetic, 0.1, 10)
+    sampler = HamiltonianMonteCarlo(potential, 0.1, 10)
     position, momentum = sampler(position, momentum)
 
 def test_constant_potential_reverse():
@@ -15,9 +14,8 @@ def test_constant_potential_reverse():
     position0 = jax.random.normal(jax.random.PRNGKey(0), (100,))
     momentum0 = jax.random.normal(jax.random.PRNGKey(0), (100,))
     potential = lambda x, time: 0.5 * jnp.sum(x ** 2)
-    kinetic = lambda x: 0.5 * jnp.sum(x ** 2)
     from lean.samplers import HamiltonianMonteCarlo
-    sampler = HamiltonianMonteCarlo(potential, kinetic, 0.1, 10)
+    sampler = HamiltonianMonteCarlo(potential, 0.1, 10)
     position1, momentum1 = sampler(position0, momentum0)
 
     position2, momentum2 = sampler.reverse(position1, momentum1)
@@ -30,9 +28,8 @@ def test_time_dependent_potential_reverse():
     position0 = jax.random.normal(jax.random.PRNGKey(0), (100,))
     momentum0 = jax.random.normal(jax.random.PRNGKey(0), (100,))
     potential = lambda x, time: 0.5 * jnp.sum(time * x ** 2)
-    kinetic = lambda x: 0.5 * jnp.sum(x ** 2)
     from lean.samplers import HamiltonianMonteCarlo
-    sampler = HamiltonianMonteCarlo(potential, kinetic, 0.1, 10)
+    sampler = HamiltonianMonteCarlo(potential, 0.1, 10)
     position1, momentum1 = sampler(position0, momentum0)
 
     position2, momentum2 = sampler.reverse(position1, momentum1)

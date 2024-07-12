@@ -5,6 +5,7 @@ import jax
 from jax import numpy as jnp
 import numpy as onp
 import math
+from lean.distributions import RadialLogNormal2D
 
 sys.path.append(os.path.abspath("en_flows"))
 from lean.samplers import HamiltonianMonteCarlo
@@ -48,9 +49,13 @@ def time_dependent_potential(
         schedule_a=None,
         schedule_b=None,
         schedule_c=None,
-        scale=None,
+        log_sigma=None,
+        mu=None,
+
 ):
-    gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
+    # gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
+
+    gaussian_potential = RadialLogNormal2D(mu, log_sigma).log_prob(x).sum(-1).mean()
     gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
     x = x[..., :, None, :] - x[..., None, :, :]
@@ -69,25 +74,28 @@ def time_dependent_potential(
     return energy
 
 def loss_fn(params, sampler_params, x, key):
-    schedules, scales = params
+    schedules, mu, log_sigma = params
     schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
-    momentum0 = jax.random.normal(key, x.shape) * jnp.exp(scales[2])
+    momentum0 = RadialLogNormal2D(mu[0], log_sigma[0]).sample(key, x.shape[:-1])
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
         schedule_a=schedule_a,
         schedule_b=schedule_b,
         schedule_c=schedule_c,
-        scale=jnp.exp(scales[2]),
+        mu=mu[0],
+        log_sigma=log_sigma[0],
     )
     sampler = HamiltonianMonteCarlo(
         potential=_time_dependent_potential,
         **sampler_params,
     )
     position, momentum = sampler.reverse(x, momentum0)
-    loss = -jax.scipy.stats.norm.logpdf(position, scale=jnp.exp(scales[0])).sum(-1).sum(-1).mean() \
-        - jax.scipy.stats.norm.logpdf(momentum, scale=jnp.exp(scales[1])).sum(-1).sum(-1).mean() \
-        + jax.scipy.stats.norm.logpdf(momentum0, scale=jnp.exp(scales[2])).sum(-1).sum(-1).mean()
+    
+    loss = -RadialLogNormal2D(mu[0], log_sigma[0]).log_prob(position).sum(-1).mean() \
+        - RadialLogNormal2D(mu[1], log_sigma[1]).log_prob(momentum).sum(-1).mean() \
+        + RadialLogNormal2D(mu[2], log_sigma[2]).log_prob(momentum0).sum(-1).mean()
+
     return loss
 
 def run(args):

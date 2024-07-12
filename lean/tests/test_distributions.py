@@ -10,9 +10,9 @@ def test_radial_gaussian():
     log_prob = radial.log_prob(x)
 
 def test_normalizing_constant():
-    x_space = jnp.linspace(-10, 10, 10)
-    y_space = jnp.linspace(-10, 10, 10)
-    z_space = jnp.linspace(-10, 10, 10)
+    x_space = jnp.linspace(-10, 10, 50)
+    y_space = jnp.linspace(-10, 10, 50)
+    z_space = jnp.linspace(-10, 10, 50)
 
     from lean.distributions import RadialLogNormal
     total_prob = 0.0
@@ -22,5 +22,4 @@ def test_normalizing_constant():
             for z in z_space:
                 prob = jnp.exp(radial.log_prob(jnp.array([x, y, z])))
                 total_prob += prob
-    print(total_prob)
     
