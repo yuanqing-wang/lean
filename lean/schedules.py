@@ -3,7 +3,6 @@ from typing import NamedTuple, Mapping
 import math
 import jax
 from jax import numpy as jnp
-from scripts.dw2.run import coefficient
 
 class Schedule(NamedTuple):
     params: Mapping

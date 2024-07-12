@@ -18,6 +18,8 @@ def potential(
         d0=4.0,
         **kwargs,
 ):
+    x = jnp.linalg.norm(x, axis=-1)
+
     energy = (1 / (2 * tao)) * (
         a * (x - d0)
         + b * (x - d0) ** 2
@@ -46,10 +48,15 @@ def time_dependent_potential(
         schedule_a=None,
         schedule_b=None,
         schedule_c=None,
+        scale=None,
 ):
-    gaussian_potential = jax.scipy.stats.norm.logpdf(x).sum(-1).sum(-1).mean()
+    gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
     gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
+    x = x[..., :, None, :] - x[..., None, :, :]
+    x = (x ** 2).sum(-1) + 1e-10
+    x = x ** 0.5
+    x = x.reshape(*x.shape[:-2], -1)
     a_term = a * (x - d0)
     b_term = b * (x - d0) ** 2
     c_term = c * (x - d0) ** 4
@@ -57,28 +64,30 @@ def time_dependent_potential(
     a_term = a_term * schedule_a(time)
     b_term = b_term * schedule_b(time)
     c_term = c_term * schedule_c(time)
+    energy = (1 / (2 * tao)) * (a_term + b_term + c_term).sum(-1).mean()
+    energy = energy + gaussian_potential
+    return energy
 
-    energy = (1 / (2 * tao)) * (a_term + b_term + c_term)
-    return energy.sum()
-
-def loss_fn(schedules, sampler_params, x, key):
+def loss_fn(params, sampler_params, x, key):
+    schedules, scales = params
     schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
-    momentum0 = jax.random.normal(key, x.shape)
+    momentum0 = jax.random.normal(key, x.shape) * jnp.exp(scales[2])
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
         schedule_a=schedule_a,
         schedule_b=schedule_b,
         schedule_c=schedule_c,
+        scale=jnp.exp(scales[2]),
     )
     sampler = HamiltonianMonteCarlo(
         potential=_time_dependent_potential,
         **sampler_params,
     )
     position, momentum = sampler.reverse(x, momentum0)
-    loss = -jax.scipy.stats.norm.logpdf(position).sum(-1).sum(-1).mean() \
-        - jax.scipy.stats.norm.logpdf(momentum).sum(-1).sum(-1).mean() \
-        + jax.scipy.stats.norm.logpdf(momentum0).sum(-1).sum(-1).mean()
+    loss = -jax.scipy.stats.norm.logpdf(position, scale=jnp.exp(scales[0])).sum(-1).sum(-1).mean() \
+        - jax.scipy.stats.norm.logpdf(momentum, scale=jnp.exp(scales[1])).sum(-1).sum(-1).mean() \
+        + jax.scipy.stats.norm.logpdf(momentum0, scale=jnp.exp(scales[2])).sum(-1).sum(-1).mean()
     return loss
 
 def run(args):
@@ -89,15 +98,16 @@ def run(args):
     key = jax.random.PRNGKey(2666)
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
-    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
-    schedule_a = SinRBFSchedule.init(key_a, 100)
-    schedule_b = SinRBFSchedule.init(key_b, 100)
-    schedule_c = SinRBFSchedule.init(key_c, 100)
+    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 10)
+    schedule_a = SinRBFSchedule.init(key_a, 10)
+    schedule_b = SinRBFSchedule.init(key_b, 10)
+    schedule_c = SinRBFSchedule.init(key_c, 10)
     schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
+    scales = jnp.zeros(3)
 
     import optax
     optimizer = optax.adam(1e-3)
-    opt_state = optimizer.init(schedule)
+    opt_state = optimizer.init([schedules, scales])
     sampler_args = {
         'step_size': 1e-3,
         'steps': 100,
@@ -105,22 +115,26 @@ def run(args):
     
     key = jax.random.PRNGKey(2666)
 
-    def step(schedules, opt_state, data_train, key):
+    def step(schedules, scales, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            schedules, sampler_args, data_train, subkey,
+            [schedules, scales], sampler_args, data_train, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules = optax.apply_updates(schedules, updates)
-        return schedules, opt_state, loss, key
+        schedules, scales = optax.apply_updates([schedules, scales], updates)
+        return schedules, scales, opt_state, loss, key
     
     step = jax.jit(step)
     
     for _ in range(100000):
-        schedules, opt_state, loss, key = step(
-            schedules, opt_state, data_train, key
+        schedules, scales, opt_state, loss, key = step(
+            schedules, scales, opt_state, data_train, key
         )
-        print(loss)
+
+        if _ % 100 == 0:
+            loss_val = loss_fn([schedules, scales], sampler_args, data_val, key)
+            loss_test = loss_fn([schedules, scales], sampler_args, data_test, key)
+            print(loss, loss_val, loss_test)
 
 if __name__ == "__main__":
     import argparse
