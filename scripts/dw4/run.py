@@ -76,7 +76,7 @@ def time_dependent_potential(
 def loss_fn(params, sampler_params, x, key):
     schedules, mu, log_sigma = params
     schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
-    momentum0 = RadialLogNormal2D(mu[0], log_sigma[0]).sample(key, x.shape[:-1])
+    momentum0 = RadialLogNormal2D(mu[2], log_sigma[2]).sample(key, x.shape[:-1])
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
@@ -91,10 +91,12 @@ def loss_fn(params, sampler_params, x, key):
         **sampler_params,
     )
     position, momentum = sampler.reverse(x, momentum0)
-    
-    loss = -RadialLogNormal2D(mu[0], log_sigma[0]).log_prob(position).sum(-1).mean() \
-        - RadialLogNormal2D(mu[1], log_sigma[1]).log_prob(momentum).sum(-1).mean() \
-        + RadialLogNormal2D(mu[2], log_sigma[2]).log_prob(momentum0).sum(-1).mean()
+
+    ll_final_position = RadialLogNormal2D(mu[0], log_sigma[0]).log_prob(position).sum(-1).mean()
+    ll_final_momentum = RadialLogNormal2D(mu[1], log_sigma[1]).log_prob(momentum).sum(-1).mean()
+    ll_initial_momentum = RadialLogNormal2D(mu[2], log_sigma[2]).log_prob(momentum0).sum(-1).mean()
+
+    loss = -ll_final_position - ll_final_momentum + ll_initial_momentum
 
     return loss
 
@@ -106,43 +108,44 @@ def run(args):
     key = jax.random.PRNGKey(2666)
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
-    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 10)
-    schedule_a = SinRBFSchedule.init(key_a, 10)
-    schedule_b = SinRBFSchedule.init(key_b, 10)
-    schedule_c = SinRBFSchedule.init(key_c, 10)
+    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
+    schedule_a = SinRBFSchedule.init(key_a, 100)
+    schedule_b = SinRBFSchedule.init(key_b, 100)
+    schedule_c = SinRBFSchedule.init(key_c, 100)
     schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
-    scales = jnp.zeros(3)
+    mu = jnp.zeros(3)
+    log_sigma = jnp.zeros(3)
 
     import optax
     optimizer = optax.adam(1e-3)
-    opt_state = optimizer.init([schedules, scales])
+    opt_state = optimizer.init([schedules, mu, log_sigma])
     sampler_args = {
-        'step_size': 1e-3,
-        'steps': 100,
+        'step_size': 1e-2,
+        'steps': 50,
     }
     
     key = jax.random.PRNGKey(2666)
 
-    def step(schedules, scales, opt_state, data_train, key):
+    def step(schedules, mu, log_sigma, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            [schedules, scales], sampler_args, data_train, subkey,
+            [schedules, mu, log_sigma], sampler_args, data_train, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules, scales = optax.apply_updates([schedules, scales], updates)
-        return schedules, scales, opt_state, loss, key
+        schedules, mu, log_sigma = optax.apply_updates([schedules, mu, log_sigma], updates)
+        return schedules, mu, log_sigma, opt_state, loss, key
     
     step = jax.jit(step)
     
     for _ in range(100000):
-        schedules, scales, opt_state, loss, key = step(
-            schedules, scales, opt_state, data_train, key
+        schedules, mu, log_sigma, opt_state, loss, key = step(
+            schedules, mu, log_sigma, opt_state, data_train, key
         )
 
         if _ % 100 == 0:
-            loss_val = loss_fn([schedules, scales], sampler_args, data_val, key)
-            loss_test = loss_fn([schedules, scales], sampler_args, data_test, key)
-            print(loss, loss_val, loss_test)
+            loss_val = loss_fn([schedules, mu, log_sigma], sampler_args, data_val, key)
+            loss_test = loss_fn([schedules, mu, log_sigma], sampler_args, data_test, key)
+            print(loss, loss_val, loss_test, flush=True)
 
 if __name__ == "__main__":
     import argparse
