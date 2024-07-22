@@ -232,7 +232,7 @@ class LangevinDynamics(NamedTuple):
                 * momentum_new
                 
         # compute delta S
-        delta_S = 0.5 * (
+        delta_S = delta_S + 0.5 * (
             (eta ** 2).sum(-1).sum(-1).mean()
             + (eta_prime ** 2).sum(-1).sum(-1).mean()
             - (eta_tilde ** 2).sum(-1).sum(-1).mean()
