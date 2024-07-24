@@ -6,6 +6,7 @@ from jax import numpy as jnp
 import numpy as onp
 import math
 from lean.distributions import CenteredNormal
+from lean.models import ConditionalVelocity
 
 sys.path.append(os.path.abspath("en_flows"))
 from lean.samplers import HamiltonianMonteCarlo
@@ -70,17 +71,19 @@ def time_dependent_potential(
     energy = energy + gaussian_potential
     return energy
 
-def loss_fn(params, sampler_params, x, key):
-    schedules, log_sigma = params
-    schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
-    momentum0 = CenteredNormal(log_sigma[2]).sample(key, x.shape)
+def loss_fn(params, sampler_params, x, key, conditional_velocity):
+    schedules, log_sigma, velocity_params = params
+    schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules    
+    h0 = jnp.ones((x.shape[0], x.shape[1], 1))
+    h1 = -jnp.ones((x.shape[0], x.shape[1], 1))
+    momentum0 = conditional_velocity.apply(velocity_params, h0, x, key)
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
         schedule_a=schedule_a,
         schedule_b=schedule_b,
         schedule_c=schedule_c,
-        log_sigma=log_sigma[0],
+        log_sigma=log_sigma,
     )
     sampler = HamiltonianMonteCarlo(
         potential=_time_dependent_potential,
@@ -88,10 +91,20 @@ def loss_fn(params, sampler_params, x, key):
     )
     position, momentum = sampler.reverse(x, momentum0)
 
-    ll_final_position = CenteredNormal(log_sigma[0]).log_prob(position).sum(-1).mean()
-    ll_final_momentum = CenteredNormal(log_sigma[1]).log_prob(momentum).sum(-1).mean()
-    ll_initial_momentum = CenteredNormal(log_sigma[2]).log_prob(momentum0).sum(-1).mean()
-
+    ll_final_position = CenteredNormal(log_sigma).log_prob(position).sum(-1).sum(-1).mean()
+    ll_final_momentum = CenteredNormal(log_sigma).log_prob(momentum).sum(-1).sum(-1).mean()
+    
+    # ll_final_momentum = conditional_velocity.apply(
+    #     velocity_params, h1, position, momentum, method=conditional_velocity.log_prob,
+    # ).sum(-1).sum(-1).mean()
+    
+    # ll_initial_momentum = conditional_velocity.apply(
+    #     velocity_params, h0, x, momentum0, method=conditional_velocity.log_prob,
+    # ).sum(-1).sum(-1).mean()
+    
+    ll_initial_momentum = CenteredNormal(log_sigma).log_prob(momentum0).sum(-1).sum(-1).mean()
+    
+    
     loss = -ll_final_position - ll_final_momentum + ll_initial_momentum
 
     return loss
@@ -100,46 +113,59 @@ def run(args):
     data_train = jnp.load(args.data_train)
     data_val = jnp.load(args.data_val)
     data_test = jnp.load(args.data_test)
+    
+    data_train = data_train - data_train.mean(-2, keepdims=True)
+    data_val = data_val - data_val.mean(-2, keepdims=True)
+    data_test = data_test - data_test.mean(-2, keepdims=True)
 
     key = jax.random.PRNGKey(2666)
-    key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
+    key_velocity, key_gaussian, key_a, key_b, key_c = jax.random.split(key, 5)
     from lean.schedules import SinRBFSchedule
     schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
     schedule_a = SinRBFSchedule.init(key_a, 100)
     schedule_b = SinRBFSchedule.init(key_b, 100)
     schedule_c = SinRBFSchedule.init(key_c, 100)
     schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
-    log_sigma = jnp.zeros(3)
-
+    log_sigma = jnp.zeros(1)
+    conditional_velocity = ConditionalVelocity(
+        hidden_features=args.hidden_features, depth=args.depth
+    )
+    velocity_params = conditional_velocity.init(
+        key_velocity, 
+        jnp.zeros((data_train.shape[0], data_train.shape[1], 1)), 
+        data_train, 
+        key_velocity,
+    )
+    
     import optax
     optimizer = optax.adam(1e-3)
-    opt_state = optimizer.init([schedules, log_sigma])
+    opt_state = optimizer.init([schedules, log_sigma, velocity_params])
     sampler_args = {
-        'step_size': 1e-2,
-        'steps': 100,
+        'step_size': 1e-3,
+        'steps': 50,
     }
     
     key = jax.random.PRNGKey(2666)
 
-    def step(schedules, log_sigma, opt_state, data_train, key):
+    def step(schedules, log_sigma, velocity_params, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            [schedules, log_sigma], sampler_args, data_train, subkey,
+            [schedules, log_sigma, velocity_params], sampler_args, data_train, subkey, conditional_velocity,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules, log_sigma = optax.apply_updates([schedules, log_sigma], updates)
-        return schedules, log_sigma, opt_state, loss, key
+        schedules, log_sigma, velocity_params = optax.apply_updates([schedules, log_sigma, velocity_params], updates)
+        return schedules, log_sigma, velocity_params, opt_state, loss, key
     
     step = jax.jit(step)
     
     for _ in range(100000):
-        schedules, log_sigma, opt_state, loss, key = step(
-            schedules, log_sigma, opt_state, data_train, key
+        schedules, log_sigma, velocity_params, opt_state, loss, key = step(
+            schedules, log_sigma, velocity_params, opt_state, data_train, key, 
         )
 
         if _ % 100 == 0:
-            loss_val = loss_fn([schedules, log_sigma], sampler_args, data_val, key)
-            loss_test = loss_fn([schedules, log_sigma], sampler_args, data_test, key)
+            loss_val = loss_fn([schedules, log_sigma, velocity_params], sampler_args, data_val, key, conditional_velocity)
+            loss_test = loss_fn([schedules, log_sigma, velocity_params], sampler_args, data_test, key, conditional_velocity)
             print(loss, loss_val, loss_test, flush=True)
 
 if __name__ == "__main__":
@@ -148,5 +174,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_train", type=str, default="data_train.npy")
     parser.add_argument("--data_val", type=str, default="data_val.npy")
     parser.add_argument("--data_test", type=str, default="data_test.npy")
+    parser.add_argument("--depth", type=int, default=3)
+    parser.add_argument("--hidden_features", type=int, default=16)
     args = parser.parse_args()
     run(args)

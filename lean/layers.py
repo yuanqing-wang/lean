@@ -10,7 +10,7 @@ class EGNNLayer(nn.Module):
     @nn.compact
     def __call__(self, h, x):
         delta_x = x[..., :, None, :] - x[..., None, :, :]
-        distance = ((delta_x + EPSILON) ** 2).sum(-1, keepdims=True) ** 0.5
+        distance = ((delta_x ** 2).sum(-1, keepdims=True) + EPSILON )** 0.5
         message = nn.Dense(self.hidden_features)(
             jnp.concatenate(
                 [
