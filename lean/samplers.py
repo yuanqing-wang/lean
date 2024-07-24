@@ -201,7 +201,7 @@ class LangevinDynamics(NamedTuple):
             + c1 * (
                 force 
                 - self.gamma * self.mass * momentum
-                + c2 * eta,
+                + c2 * eta
             )
 
         # update position
@@ -218,7 +218,7 @@ class LangevinDynamics(NamedTuple):
             momentum_prime
             + c1 * (
                 force 
-                + c2 * eta_prime,
+                + c2 * eta_prime
             )
         )
 

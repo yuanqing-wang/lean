@@ -5,7 +5,7 @@ import jax
 from jax import numpy as jnp
 import numpy as onp
 import math
-from lean.distributions import RadialLogNormal2D
+from lean.distributions import CenteredNormal
 
 sys.path.append(os.path.abspath("en_flows"))
 from lean.samplers import HamiltonianMonteCarlo
@@ -50,12 +50,9 @@ def time_dependent_potential(
         schedule_b=None,
         schedule_c=None,
         log_sigma=None,
-        mu=None,
 
 ):
-    # gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
-
-    gaussian_potential = RadialLogNormal2D(mu, log_sigma).log_prob(x).sum(-1).mean()
+    gaussian_potential = CenteredNormal(log_sigma).log_prob(x).sum(-1).sum(-1).mean()
     gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
     x = x[..., :, None, :] - x[..., None, :, :]
@@ -74,16 +71,15 @@ def time_dependent_potential(
     return energy
 
 def loss_fn(params, sampler_params, x, key):
-    schedules, mu, log_sigma = params
+    schedules, log_sigma = params
     schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
-    momentum0 = RadialLogNormal2D(mu[2], log_sigma[2]).sample(key, x.shape[:-1])
+    momentum0 = CenteredNormal(log_sigma[2]).sample(key, x.shape)
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
         schedule_a=schedule_a,
         schedule_b=schedule_b,
         schedule_c=schedule_c,
-        mu=mu[0],
         log_sigma=log_sigma[0],
     )
     sampler = HamiltonianMonteCarlo(
@@ -92,9 +88,9 @@ def loss_fn(params, sampler_params, x, key):
     )
     position, momentum = sampler.reverse(x, momentum0)
 
-    ll_final_position = RadialLogNormal2D(mu[0], log_sigma[0]).log_prob(position).sum(-1).mean()
-    ll_final_momentum = RadialLogNormal2D(mu[1], log_sigma[1]).log_prob(momentum).sum(-1).mean()
-    ll_initial_momentum = RadialLogNormal2D(mu[2], log_sigma[2]).log_prob(momentum0).sum(-1).mean()
+    ll_final_position = CenteredNormal(log_sigma[0]).log_prob(position).sum(-1).mean()
+    ll_final_momentum = CenteredNormal(log_sigma[1]).log_prob(momentum).sum(-1).mean()
+    ll_initial_momentum = CenteredNormal(log_sigma[2]).log_prob(momentum0).sum(-1).mean()
 
     loss = -ll_final_position - ll_final_momentum + ll_initial_momentum
 
@@ -113,38 +109,37 @@ def run(args):
     schedule_b = SinRBFSchedule.init(key_b, 100)
     schedule_c = SinRBFSchedule.init(key_c, 100)
     schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
-    mu = jnp.zeros(3)
     log_sigma = jnp.zeros(3)
 
     import optax
     optimizer = optax.adam(1e-3)
-    opt_state = optimizer.init([schedules, mu, log_sigma])
+    opt_state = optimizer.init([schedules, log_sigma])
     sampler_args = {
         'step_size': 1e-2,
-        'steps': 50,
+        'steps': 100,
     }
     
     key = jax.random.PRNGKey(2666)
 
-    def step(schedules, mu, log_sigma, opt_state, data_train, key):
+    def step(schedules, log_sigma, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            [schedules, mu, log_sigma], sampler_args, data_train, subkey,
+            [schedules, log_sigma], sampler_args, data_train, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules, mu, log_sigma = optax.apply_updates([schedules, mu, log_sigma], updates)
-        return schedules, mu, log_sigma, opt_state, loss, key
+        schedules, log_sigma = optax.apply_updates([schedules, log_sigma], updates)
+        return schedules, log_sigma, opt_state, loss, key
     
     step = jax.jit(step)
     
     for _ in range(100000):
-        schedules, mu, log_sigma, opt_state, loss, key = step(
-            schedules, mu, log_sigma, opt_state, data_train, key
+        schedules, log_sigma, opt_state, loss, key = step(
+            schedules, log_sigma, opt_state, data_train, key
         )
 
         if _ % 100 == 0:
-            loss_val = loss_fn([schedules, mu, log_sigma], sampler_args, data_val, key)
-            loss_test = loss_fn([schedules, mu, log_sigma], sampler_args, data_test, key)
+            loss_val = loss_fn([schedules, log_sigma], sampler_args, data_val, key)
+            loss_test = loss_fn([schedules, log_sigma], sampler_args, data_test, key)
             print(loss, loss_val, loss_test, flush=True)
 
 if __name__ == "__main__":
