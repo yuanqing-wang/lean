@@ -4,6 +4,7 @@ from functools import partial
 import jax
 from jax import numpy as jnp
 import numpy as onp
+from flax.core import FrozenDict
 import math
 from lean.distributions import CenteredNormal
 from lean.models import ConditionalVelocity
@@ -71,12 +72,14 @@ def time_dependent_potential(
     energy = energy + gaussian_potential
     return energy
 
+@partial(jax.jit, static_argnums=(1, 4,))
 def loss_fn(params, sampler_params, x, key, conditional_velocity):
     schedules, log_sigma, velocity_params = params
     schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules    
     h0 = jnp.ones((x.shape[0], x.shape[1], 1))
     h1 = -jnp.ones((x.shape[0], x.shape[1], 1))
     momentum0 = conditional_velocity.apply(velocity_params, h0, x, key)
+    
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
@@ -92,18 +95,16 @@ def loss_fn(params, sampler_params, x, key, conditional_velocity):
     position, momentum = sampler.reverse(x, momentum0)
 
     ll_final_position = CenteredNormal(log_sigma).log_prob(position).sum(-1).sum(-1).mean()
-    ll_final_momentum = CenteredNormal(log_sigma).log_prob(momentum).sum(-1).sum(-1).mean()
     
-    # ll_final_momentum = conditional_velocity.apply(
-    #     velocity_params, h1, position, momentum, method=conditional_velocity.log_prob,
-    # ).sum(-1).sum(-1).mean()
+    ll_final_momentum = conditional_velocity.apply(
+        velocity_params, h1, position, momentum, method=conditional_velocity.log_prob,
+    ).sum(-1).sum(-1).mean()
     
-    # ll_initial_momentum = conditional_velocity.apply(
-    #     velocity_params, h0, x, momentum0, method=conditional_velocity.log_prob,
-    # ).sum(-1).sum(-1).mean()
+    # ll_final_momentum = CenteredNormal(log_sigma).log_prob(momentum).sum(-1).sum(-1).mean()
     
-    ll_initial_momentum = CenteredNormal(log_sigma).log_prob(momentum0).sum(-1).sum(-1).mean()
-    
+    ll_initial_momentum = conditional_velocity.apply(
+        velocity_params, h0, x, momentum0, method=conditional_velocity.log_prob,
+    ).sum(-1).sum(-1).mean()
     
     loss = -ll_final_position - ll_final_momentum + ll_initial_momentum
 
@@ -142,8 +143,9 @@ def run(args):
     opt_state = optimizer.init([schedules, log_sigma, velocity_params])
     sampler_args = {
         'step_size': 1e-3,
-        'steps': 50,
+        'steps': 5,
     }
+    sampler_args = FrozenDict(sampler_args)
     
     key = jax.random.PRNGKey(2666)
 
@@ -158,12 +160,12 @@ def run(args):
     
     step = jax.jit(step)
     
-    for _ in range(100000):
+    for _ in range(100000000):
         schedules, log_sigma, velocity_params, opt_state, loss, key = step(
             schedules, log_sigma, velocity_params, opt_state, data_train, key, 
         )
-
-        if _ % 100 == 0:
+        
+        if _ % 10000 == 0:
             loss_val = loss_fn([schedules, log_sigma, velocity_params], sampler_args, data_val, key, conditional_velocity)
             loss_test = loss_fn([schedules, log_sigma, velocity_params], sampler_args, data_test, key, conditional_velocity)
             print(loss, loss_val, loss_test, flush=True)

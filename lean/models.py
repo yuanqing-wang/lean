@@ -1,3 +1,4 @@
+from numpy import log
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
@@ -20,9 +21,10 @@ class EGNNModel(nn.Module):
         ]
         
     def __call__(self, h, x):
-        for layer in self.layers:
+        for idx, layer in enumerate(self.layers):
             h, x = layer(h, x)
-            h = self.activation(h)
+            if idx < self.depth - 1:
+                h = self.activation(h)
         return h, x
     
 class ConditionalVelocity(nn.Module):
@@ -34,18 +36,31 @@ class ConditionalVelocity(nn.Module):
         self.egnn = EGNNModel(self.hidden_features, 1, self.depth)
         
     def __call__(self, h, x, key):
+        # compute parameters to the normal distribution
         log_sigma, mu = self.egnn(h, x)
+        log_sigma = log_sigma.mean(-2, keepdims=True)
         mu = mu - x
         mu = mu - jnp.mean(mu, axis=-2, keepdims=True)
-        v = jax.random.normal(key, mu.shape) * jnp.exp(log_sigma)
+        
+        # sample from the distribution
+        v = jax.random.normal(key, mu.shape) * jax.nn.softplus(log_sigma) + mu
         v = v - v.mean(-2, keepdims=True)
         return v
     
     def log_prob(self, h, x, v):
+        # center, just to make sure
+        x = x - x.mean(-2, keepdims=True)
+        v = v - v.mean(-2, keepdims=True)
+        
+        # compute the log probability
         log_sigma, mu = self.egnn(h, x)
+        log_sigma = log_sigma.mean(-2, keepdims=True)
+        
         mu = mu - x
         mu = mu - jnp.mean(mu, axis=-2, keepdims=True)
-        log_prob = tfd.Normal(mu, jnp.exp(log_sigma)).log_prob(v)
+        
+        # compute log likelihood
+        log_prob = tfd.Normal(mu, jax.nn.softplus(log_sigma)).log_prob(v)
         return log_prob
         
         

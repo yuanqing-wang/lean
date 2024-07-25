@@ -6,4 +6,4 @@
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks-per-node=1
 
-python run_ld.py
+python run.py
