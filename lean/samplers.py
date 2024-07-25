@@ -1,7 +1,8 @@
 from math import gamma
 import jax
 import jax.numpy as jnp
-from typing import Callable, NamedTuple, Optional
+from jax.experimental.ode import odeint
+from typing import Callable, NamedTuple, Optional, Tuple
 from functools import partial
 
 class HamiltonianMonteCarlo(NamedTuple):
@@ -15,18 +16,14 @@ class HamiltonianMonteCarlo(NamedTuple):
     integrator : Callable
         Integrator function.
 
-    steps: int
-        Number of steps to take in the leapfrog integration.
     """
     potential: Callable
     step_size: float
-    steps: int
 
     def step(
             self, 
-            position: jnp.ndarray, 
-            momentum: jnp.ndarray,
-            step: Optional[int] = None,
+            state: Tuple[jnp.ndarray, jnp.ndarray],
+            time: jnp.ndarray,
             reverse: bool = False
         ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -39,13 +36,13 @@ class HamiltonianMonteCarlo(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
+        position, momentum = state
+        
         # compute time
-        if step is not None:
-            time = (step / self.steps)
-        else:
-            time = 0.0
-
         step_size = self.step_size * (-1 if reverse else 1)
+        time = (1.0 - time) if reverse else time
+        
+        jax.debug.print("{x}", x=time)
 
         # compose potential energy
         potential = partial(self.potential, time=time)
@@ -65,6 +62,10 @@ class HamiltonianMonteCarlo(NamedTuple):
 
         # update momentum
         momentum = momentum + 0.5 * step_size * force
+        
+        position0, momentum0 = state
+        position = position - position0
+        momentum = momentum - momentum0
 
         return position, momentum
     
@@ -86,13 +87,14 @@ class HamiltonianMonteCarlo(NamedTuple):
         # initialize state
         state = (position, momentum)
 
-        # run leapfrog integration
-        state = jax.lax.fori_loop(
-            0, self.steps, lambda i, state: self.step(*state, step=i), state
+        # run leapfrog integration        
+        state = odeint(
+            self.step, state, jnp.array([0.0, 1.0]), 
         )
 
         # unpack
         position, momentum = state
+        position, momentum = position[-1], momentum[-1]
         return position, momentum
     
     def reverse(
@@ -116,13 +118,11 @@ class HamiltonianMonteCarlo(NamedTuple):
         # initialize state
         state = (position, momentum)
 
-        # run leapfrog integration
-        state = jax.lax.fori_loop(
-            0, self.steps,
-            lambda i, state: self.step(*state, step=self.steps-i-1, reverse=True), 
-            state,
+        # run leapfrog integration        
+        state = odeint(
+            self.step, state, jnp.array([0.0, 1.0]), (True,)
         )
-
+        
         # unpack
         position, momentum = state
         return position, momentum
