@@ -6,6 +6,7 @@ from jax import numpy as jnp
 import numpy as onp
 import math
 from lean.distributions import CenteredNormal
+from flax.core import FrozenDict
 
 sys.path.append(os.path.abspath("en_flows"))
 from lean.samplers import HamiltonianMonteCarlo, LangevinDynamics
@@ -72,6 +73,8 @@ def time_dependent_potential(
     energy = energy + gaussian_potential
     return energy
 
+
+@partial(jax.jit, static_argnums=(1,))
 def loss_fn(params, sampler_params, x, key):
     key_gaussian, key_sampler = jax.random.split(key)
     schedules, log_sigma = params
@@ -119,8 +122,9 @@ def run(args):
     opt_state = optimizer.init([schedules, log_sigma])
     sampler_args = {
         'step_size': 1e-2,
-        'steps': 50,
+        'steps': 100,
     }
+    sampler_args = FrozenDict(sampler_args)
     
     def step(schedules, log_sigma, opt_state, data_train, key):
         subkey, key = jax.random.split(key)
@@ -138,7 +142,7 @@ def run(args):
             schedules, log_sigma, opt_state, data_train, key
         )
 
-        if _ % 100 == 0:
+        if _ % 10000 == 0:
             loss_val = loss_fn([schedules, log_sigma], sampler_args, data_val, key)
             loss_test = loss_fn([schedules, log_sigma], sampler_args, data_test, key)
             print(loss, loss_val, loss_test, flush=True)
