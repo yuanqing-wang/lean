@@ -9,9 +9,7 @@ from lean.distributions import CenteredNormal
 from flax.core import FrozenDict
 
 sys.path.append(os.path.abspath("en_flows"))
-from lean.samplers import HamiltonianMonteCarlo, LangevinDynamics
-
-N_PARTICLES = 10
+from lean.samplers import HamiltonianMonteCarlo
 
 def potential(
         x, 
@@ -22,16 +20,14 @@ def potential(
         d0=4.0,
         **kwargs,
 ):
-    x = x[..., :, None, :] - x[..., None, :, :]
-    x = (x ** 2).sum(-1) + 1e-10
-    x = x ** 0.5
+    x = jnp.linalg.norm(x, axis=-1)
 
     energy = (1 / (2 * tao)) * (
         a * (x - d0)
         + b * (x - d0) ** 2
         + c * (x - d0) ** 4
     )
-    return energy
+    return energy.sum()
 
 def cos(t):
     return jnp.cos(0.5 * t / math.pi)
@@ -41,12 +37,6 @@ def sin(t):
 
 def coefficient(t, a, b):
     return jax.scipy.special.betainc(a, b, t)
-
-def ess(log_w):
-    # normalize
-    w = jax.nn.softmax(log_w)
-    ess = 1 / (w ** 2).sum()
-    return ess
 
 def time_dependent_potential(
         x, 
@@ -63,8 +53,6 @@ def time_dependent_potential(
         log_sigma=None,
 
 ):
-    # gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
-
     gaussian_potential = CenteredNormal(log_sigma).log_prob(x).sum(-1).sum(-1).mean()
     gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
@@ -83,79 +71,79 @@ def time_dependent_potential(
     energy = energy + gaussian_potential
     return energy
 
-@partial(jax.jit, static_argnums=(1, 3))
-def compute_log_w(schedules, sampler_params, key, model):
-    schedule_gaussian, schedule_a, schedule_b, schedule_c, nn_params = schedules
-    key, key_x, key_v = jax.random.split(key, 3)
-    x = CenteredNormal(0.0).sample(key_x, (N_PARTICLES, 4, 2))
-    h = jnp.zeros((N_PARTICLES, 4, 1))
-    h, v = model.apply(nn_params, h, x)
-    
+@partial(jax.jit, static_argnums=(1,))
+def loss_fn(params, sampler_params, x, key):
+    schedules, log_sigma = params
+    schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
+    momentum0 = CenteredNormal(log_sigma[2]).sample(key, x.shape)
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
         schedule_a=schedule_a,
         schedule_b=schedule_b,
         schedule_c=schedule_c,
-        log_sigma=0.0,
+        log_sigma=log_sigma[0],
     )
-    
-    sampler = LangevinDynamics(
+    sampler = HamiltonianMonteCarlo(
         potential=_time_dependent_potential,
         **sampler_params,
     )
-    
-    x, v, delta_S = sampler(x, v, key=key)
-    log_w = -potential(x).sum(-1).sum(-1) # + CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1) + delta_S
-    jax.debug.print("{x}", x=log_w)
-    return log_w
+    position, momentum = sampler.reverse(x, momentum0)
 
-def loss_fn(schedules, sampler_params, key, model):
-    log_w = compute_log_w(schedules, sampler_params, key, model)
-    return -log_w.mean()
-    
+    ll_final_position = CenteredNormal(log_sigma[0]).log_prob(position).sum(-1).mean()
+    ll_final_momentum = CenteredNormal(log_sigma[1]).log_prob(momentum).sum(-1).mean()
+    ll_initial_momentum = CenteredNormal(log_sigma[2]).log_prob(momentum0).sum(-1).mean()
+
+    loss = -ll_final_position - ll_final_momentum + ll_initial_momentum
+
+    return loss
+
 def run(args):
-    from lean.models import EGNNModel
-    model = EGNNModel(16, 3)
-    nn_params = model.init(jax.random.PRNGKey(2666), jnp.zeros((1, 4, 1)), jnp.zeros((1, 4, 2)))
-    key = jax.random.PRNGKey(1984)
+    data_train = jnp.load(args.data_train)
+    data_val = jnp.load(args.data_val)
+    data_test = jnp.load(args.data_test)
+
+    key = jax.random.PRNGKey(2666)
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
     schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
     schedule_a = SinRBFSchedule.init(key_a, 100)
     schedule_b = SinRBFSchedule.init(key_b, 100)
     schedule_c = SinRBFSchedule.init(key_c, 100)
-    schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c, nn_params]
-    
+    schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
+    log_sigma = jnp.zeros(3)
+
     import optax
-    optimizer = optax.adam(1e-4)
-    opt_state = optimizer.init(schedules)
+    optimizer = optax.adam(1e-3)
+    opt_state = optimizer.init([schedules, log_sigma])
     sampler_args = {
-        'step_size': 0.01,
-        'beta': 1e-1,
-        # 'gamma': 1e-3,
+        'step_size': 1e-2,
+        'steps': 100000,
     }
     sampler_args = FrozenDict(sampler_args)
     
-    @partial(jax.jit, static_argnums=(3,))
-    def step(schedules, opt_state, key, model):
-        key, subkey = jax.random.split(key)
+    key = jax.random.PRNGKey(2666)
+
+    def step(schedules, log_sigma, opt_state, data_train, key):
+        subkey, key = jax.random.split(key)
         loss, grads = jax.value_and_grad(loss_fn)(
-            schedules, sampler_args, subkey,model=model,
+            [schedules, log_sigma], sampler_args, data_train, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules = optax.apply_updates(schedules, updates)
-        return schedules, opt_state, key
+        schedules, log_sigma = optax.apply_updates([schedules, log_sigma], updates)
+        return schedules, log_sigma, opt_state, loss, key
     
-    for idx in range(10000000):
-        schedules, opt_state, key = step(schedules, opt_state, key, model=model)
-        
-        # if idx % 1000 == 0:
-        #     # eval
-        #     log_w = compute_log_w(schedules, sampler_args, key, model=model)
+    step = jax.jit(step)
+    
+    for _ in range(100000):
+        schedules, log_sigma, opt_state, loss, key = step(
+            schedules, log_sigma, opt_state, data_train, key
+        )
 
-        
-
+        if _ % 1000 == 0:
+            loss_val = loss_fn([schedules, log_sigma], sampler_args, data_val, key)
+            loss_test = loss_fn([schedules, log_sigma], sampler_args, data_test, key)
+            print(loss, loss_val, loss_test, flush=True)
 
 if __name__ == "__main__":
     import argparse

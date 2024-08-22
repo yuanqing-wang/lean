@@ -87,8 +87,8 @@ def time_dependent_potential(
 def compute_log_w(schedules, sampler_params, key, model):
     schedule_gaussian, schedule_a, schedule_b, schedule_c, nn_params = schedules
     key, key_x, key_v = jax.random.split(key, 3)
-    x = CenteredNormal(0.0).sample(key_x, (N_PARTICLES, 4, 2))
-    h = jnp.zeros((N_PARTICLES, 4, 1))
+    x = CenteredNormal(0.0).sample(key_x, (N_PARTICLES, 2, 1))
+    h = jnp.zeros((N_PARTICLES, 2, 1))
     h, v = model.apply(nn_params, h, x)
     
     _time_dependent_potential = partial(

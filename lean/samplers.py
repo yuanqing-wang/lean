@@ -147,7 +147,6 @@ class LangevinDynamics(NamedTuple):
         
     potential: Callable
     step_size: float
-    steps: int
     gamma: float = 1.0
     beta: float = 1.0
     mass: float = 1.0
@@ -158,7 +157,7 @@ class LangevinDynamics(NamedTuple):
             momentum: jnp.ndarray,
             delta_S: float,
             key: jax.random.PRNGKey,
-            step: Optional[int] = None,
+            time: float = 0.0,
             reverse: bool = False,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -174,15 +173,11 @@ class LangevinDynamics(NamedTuple):
         key0, key1 = jax.random.split(key)
         
         # compute time
-        if step is not None:
-            time = (step / self.steps)
-        else:
-            time = 0.0
-
         step_size = self.step_size * (-1 if reverse else 1)
+        time = (1.0 - time) if reverse else time
 
         # compose potential energy
-        potential = partial(self.potential, time=time)
+        potential = lambda x: self.potential(x, time=time).mean()
 
         # compute force
         force = -jax.grad(potential)(position)
@@ -233,10 +228,10 @@ class LangevinDynamics(NamedTuple):
                 
         # compute delta S
         delta_S = delta_S + 0.5 * (
-            (eta ** 2).sum(-1).sum(-1).mean()
-            + (eta_prime ** 2).sum(-1).sum(-1).mean()
-            - (eta_tilde ** 2).sum(-1).sum(-1).mean()
-            - (eta_tilde_prime ** 2).sum(-1).sum(-1).mean()
+            (eta ** 2).sum(-1).sum(-1)
+            + (eta_prime ** 2).sum(-1).sum(-1)
+            - (eta_tilde ** 2).sum(-1).sum(-1)
+            - (eta_tilde_prime ** 2).sum(-1).sum(-1)
         ) 
         
         return position, momentum_new, delta_S
@@ -256,17 +251,19 @@ class LangevinDynamics(NamedTuple):
 
         momentum : jnp.ndarray
             Initial momentum.
-        """
-        # initialize state
-        state = (position, momentum, 0.0)
-        
+        """        
         # split keys
-        keys = jax.random.split(key, self.steps)
+        steps = int(1 / self.step_size)
+        keys = jax.random.split(key, steps)
+        times = jnp.linspace(0, 1, steps)
+        
+        # initialize state
+        state = (position, momentum, jnp.zeros(len(position)))
 
         # run leapfrog integration
         state = jax.lax.fori_loop(
-            0, self.steps, 
-            lambda i, state: self.step(*state, step=i, key=keys[i]), 
+            0, steps, 
+            lambda i, state: self.step(*state, time=times[i], key=keys[i]), 
             state,
         )
 
@@ -274,40 +271,3 @@ class LangevinDynamics(NamedTuple):
         position, momentum, delta_S = state
         return position, momentum, delta_S
     
-    def reverse(
-            self,
-            position: jnp.ndarray,
-            momentum: jnp.ndarray,
-            key: jax.random.PRNGKey,
-    ):
-        """Run the Hamiltonian Monte Carlo algorithm in reverse.
-
-        Parameters
-        ----------
-        position : jnp.ndarray
-            Initial position.
-
-        momentum : jnp.ndarray
-            Initial momentum.
-
-        schedule : jnp.ndarray
-            Schedule for the step size.
-        """
-        # initialize state
-        state = (position, momentum, 0.0)
-        
-        # split keys
-        keys = jax.random.split(key, self.steps)
-
-        # run leapfrog integration
-        state = jax.lax.fori_loop(
-            0, self.steps,
-            lambda i, state: self.step(
-                *state, step=self.steps-i-1, reverse=True, key=keys[i],
-            ), 
-            state,
-        )
-
-        # unpack
-        position, momentum, delta_S = state
-        return position, momentum, delta_S

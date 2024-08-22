@@ -21,7 +21,7 @@ class EGNNLayer(nn.Module):
                 axis=-1,
             )
         )
-        x = x + (delta_x * nn.Dense(1)(message)).mean(-2)
+        x = x + (delta_x * jax.nn.tanh(nn.Dense(1)(message))).mean(-2)
         aggregated_message = message.mean(-2)
         h = nn.Dense(self.out_features)(
             jnp.concatenate([h, aggregated_message], axis=-1),
