@@ -147,9 +147,10 @@ class LangevinDynamics(NamedTuple):
         
     potential: Callable
     step_size: float
-    gamma: float = 1.0
+    gamma: float = 0.9
     beta: float = 1.0
     mass: float = 1.0
+    time: float = 1.0
     
     def step(
             self, 
@@ -158,7 +159,6 @@ class LangevinDynamics(NamedTuple):
             delta_S: float,
             key: jax.random.PRNGKey,
             time: float = 0.0,
-            reverse: bool = False,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
 
@@ -172,12 +172,8 @@ class LangevinDynamics(NamedTuple):
         """
         key0, key1 = jax.random.split(key)
         
-        # compute time
-        step_size = self.step_size * (-1 if reverse else 1)
-        time = (1.0 - time) if reverse else time
-
         # compose potential energy
-        potential = lambda x: self.potential(x, time=time).mean()
+        potential = lambda x: self.potential(x, time=time).sum()
 
         # compute force
         force = -jax.grad(potential)(position)
@@ -200,7 +196,7 @@ class LangevinDynamics(NamedTuple):
             )
 
         # update position
-        position = position + step_size * momentum
+        position = position + self.step_size * momentum
 
         # update force
         force = -jax.grad(potential)(position)
@@ -253,7 +249,7 @@ class LangevinDynamics(NamedTuple):
             Initial momentum.
         """        
         # split keys
-        steps = int(1 / self.step_size)
+        steps = int(self.time / self.step_size)
         keys = jax.random.split(key, steps)
         times = jnp.linspace(0, 1, steps)
         

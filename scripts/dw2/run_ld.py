@@ -106,6 +106,7 @@ def compute_log_w(schedules, sampler_params, key, model):
     )
     
     x, v, delta_S = sampler(x, v, key=key)
+    print(potential(x).shape)
     log_w = -potential(x).sum(-1).sum(-1) # + CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1) + delta_S
     jax.debug.print("{x}", x=log_w)
     return log_w
