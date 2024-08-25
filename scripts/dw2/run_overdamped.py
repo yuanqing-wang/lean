@@ -103,7 +103,7 @@ class OverdampedLangevinDynamics(NamedTuple):
         
     potential: Callable
     step_size: float
-    gamma: float = 0.9
+    gamma: float = 1.0
     beta: float = 1.0
     mass: float = 1.0
     time: float = 1.0
@@ -213,10 +213,10 @@ def compute_log_w(schedules, sampler_params, key):
 
 def loss_fn(schedules, sampler_params, key):
     log_w = compute_log_w(schedules, sampler_params, key)
-    return -log_w.mean()
+    w = jax.nn.softmax(log_w)
+    return -w.mean()
 
 def run():
-    from lean.models import EGNNModel
     key = jax.random.PRNGKey(1984)
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
@@ -230,8 +230,9 @@ def run():
     optimizer = optax.adam(1e-4)
     opt_state = optimizer.init(schedules)
     sampler_args = {
-        'step_size': 0.01,
-        'beta': 1e-1,
+        'step_size': 0.1,
+        'time': 1.0,
+        'gamma': 10.0,
     }
     sampler_args = FrozenDict(sampler_args)
 
@@ -247,6 +248,11 @@ def run():
 
     for idx in range(10000000):
         schedules, opt_state, key = step(schedules, opt_state, key)
+        
+        if idx % 1000 == 0:
+            # eval
+            log_w = compute_log_w(schedules, sampler_args, key)
+            print(f'ESS: {ess(log_w)}')
         
 if __name__ == '__main__':
     run()

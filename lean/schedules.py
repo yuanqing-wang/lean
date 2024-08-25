@@ -24,7 +24,7 @@ class SinRBFSchedule(Schedule):
         mu = jnp.linspace(0, 1, len(gamma))
         linear = time
         time = time - mu
-        time = gamma * (time ** 2)
+        time =  (gamma * time) ** 2
         time = jnp.exp(-time)
         time = (time * self.params['coefficient']).sum()
         time = jnp.sin(linear * (math.pi)) * time
