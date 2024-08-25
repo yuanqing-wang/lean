@@ -18,22 +18,18 @@ N_DIM = 2
 
 def potential(
         x, 
-        tao=1.0, 
-        a=0.0, 
-        b=-4.0, 
-        c=0.9, 
-        d0=4.0,
+        epsilon=1.0,
+        tau=1.0,
+        r=1.0,
         **kwargs,
 ):
     x = x[..., :, None, :] - x[..., None, :, :]
-    x = (x ** 2).sum(-1) + 1e-10
+    x = jax.nn.relu((x ** 2).sum(-1))
     x = x ** 0.5
+    x = jnp.where(x > 0, r/x, 0.0)
 
-    energy = (1 / (2 * tao)) * (
-        a * (x - d0)
-        + b * (x - d0) ** 2
-        + c * (x - d0) ** 4
-    )
+    energy = (0.5 * epsilon / tau) \
+        * (x ** 12 - 2 * x ** 6)
     return energy
 
 def cos(t):
@@ -53,16 +49,13 @@ def ess(log_w):
 
 def time_dependent_potential(
         x, 
-        tao=1.0, 
-        a=0.0, 
-        b=-4.0, 
-        c=0.9, 
-        d0=4.0,
+        epsilon=1.0,
+        tau=1.0,
+        r=1.0,
         time=0.0,
         schedule_gaussian=None,
-        schedule_a=None,
-        schedule_b=None,
-        schedule_c=None,
+        schedule6=None,
+        schedule12=None,
         log_sigma=None,
 
 ):
@@ -72,17 +65,16 @@ def time_dependent_potential(
     gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
 
     x = x[..., :, None, :] - x[..., None, :, :]
-    x = (x ** 2).sum(-1) + 1e-10
+    x = jax.nn.relu((x ** 2).sum(-1))
     x = x ** 0.5
-    x = x.reshape(*x.shape[:-2], -1)
-    a_term = a * (x - d0)
-    b_term = b * (x - d0) ** 2
-    c_term = c * (x - d0) ** 4
+    x = jnp.where(x > 0, r/x, 0.0)
 
-    a_term = a_term * schedule_a(time)
-    b_term = b_term * schedule_b(time)
-    c_term = c_term * schedule_c(time)
-    energy = (1 / (2 * tao)) * (a_term + b_term + c_term).sum(-1).mean()
+    term6 = -epsilon / tau * x ** 3
+    term12 = 0.5 * epsilon / tau * x ** 2
+    
+    term6 = term6 * schedule6(time)
+    term12 = term12 * schedule12(time)
+    energy = term6 + term12
     energy = energy + gaussian_potential
     return energy
 
@@ -114,7 +106,7 @@ class OverdampedLangevinDynamics(NamedTuple):
             delta_S: float,
             key: jax.random.PRNGKey,
             epsilon: float = 1.0,
-            temperature: float = 1e-5,
+            temperature: float = 0.0,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -188,7 +180,7 @@ class OverdampedLangevinDynamics(NamedTuple):
         return position, delta_S
     
 def compute_log_w(schedules, sampler_params, key):
-    schedule_gaussian, schedule_a, schedule_b, schedule_c = schedules
+    schedule_gaussian, schedule6, schedule12 = schedules
     key, key_x = jax.random.split(key, 2)
     x = CenteredNormal(0.0).sample(key_x, (N_SAMPLES, N_PARTICLES, N_DIM))
     h = jnp.zeros((N_SAMPLES, N_PARTICLES, N_DIM))
@@ -196,9 +188,8 @@ def compute_log_w(schedules, sampler_params, key):
     _time_dependent_potential = partial(
         time_dependent_potential,
         schedule_gaussian=schedule_gaussian,
-        schedule_a=schedule_a,
-        schedule_b=schedule_b,
-        schedule_c=schedule_c,
+        schedule6=schedule6,
+        schedule12=schedule12,
         log_sigma=0.0,
     )
     
@@ -221,13 +212,12 @@ def run():
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
     schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
-    schedule_a = SinRBFSchedule.init(key_a, 100)
-    schedule_b = SinRBFSchedule.init(key_b, 100)
-    schedule_c = SinRBFSchedule.init(key_c, 100)
-    schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
+    schedule_6 = SinRBFSchedule.init(key_a, 100)
+    schedule_12 = SinRBFSchedule.init(key_b, 100)
+    schedules = [schedule_gaussian, schedule_6, schedule_12]
 
     import optax
-    optimizer = optax.adam(1e-4)
+    optimizer = optax.adam(1e-5)
     opt_state = optimizer.init(schedules)
     sampler_args = {
         'step_size': 0.01,
