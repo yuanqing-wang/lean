@@ -103,9 +103,6 @@ class OverdampedLangevinDynamics(NamedTuple):
         
     potential: Callable
     step_size: float
-    gamma: float = 1.0
-    beta: float = 1.0
-    mass: float = 1.0
     time: float = 1.0
     
     def step(
@@ -113,6 +110,8 @@ class OverdampedLangevinDynamics(NamedTuple):
             position: jnp.ndarray, 
             delta_S: float,
             key: jax.random.PRNGKey,
+            epsilon: float = 1.0,
+            temperature: float = 0.0,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -132,16 +131,14 @@ class OverdampedLangevinDynamics(NamedTuple):
         # compute force
         force = -jax.grad(potential)(position)
         
-        epsilon = self.step_size / (self.gamma * self.mass)
-
         # sample noise
         eta = jax.random.normal(key, shape=position.shape)
         
         position = position \
-            + epsilon * force + jnp.sqrt(2 * epsilon / self.beta) * eta
+            + epsilon * force + jnp.sqrt(2 * epsilon * temperature) * eta
         
         new_force = -jax.grad(potential)(position)
-        eta_tilde = jnp.sqrt(0.5 * self.beta * epsilon) * (
+        eta_tilde = jnp.sqrt(0.5 * temperature * epsilon) * (
             force + new_force
         ) - eta
                 
@@ -208,6 +205,7 @@ def compute_log_w(schedules, sampler_params, key):
     )
     
     x, delta_S = sampler(x, key=key)
+    jax.debug.print("{x}", x=potential(x).sum(-1).sum(-1))
     log_w = -potential(x).sum(-1).sum(-1) + CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1) + delta_S
     return log_w
 
@@ -232,7 +230,6 @@ def run():
     sampler_args = {
         'step_size': 0.1,
         'time': 1.0,
-        'gamma': 10.0,
     }
     sampler_args = FrozenDict(sampler_args)
 
