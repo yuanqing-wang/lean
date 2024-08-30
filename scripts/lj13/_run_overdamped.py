@@ -13,16 +13,19 @@ from scripts.dw2.run_ld import N_PARTICLES
 
 
 N_SAMPLES = 100
-N_PARTICLES = 13
-N_DIM = 3
+N_PARTICLES = 4
+N_DIM = 2
 EPSILON = 1e-5
 
-def x6(x, cutoff=0.5):
-    is_small = (x < cutoff)
-    x6_at_cutoff = cutoff ** (-6)
-    modified_x6 = jnp.exp(cutoff - x) * x6_at_cutoff
-    original_x6 = (x + EPSILON) ** (-6)
-    x6 = jnp.where(is_small, modified_x6, original_x6)
+def x6(x, cutoff=1.0):
+    # is_zero = x == 0.0
+    # is_small = (x > 0.0) & (x < cutoff)
+    # x6_at_cutoff = cutoff ** (-6)
+    # modified_x6 = 0.0 # jnp.exp(cutoff - x) * x6_at_cutoff
+    # original_x6 = 0.0 # x ** (-2) # x ** (-6)
+    # x6 = jnp.where(is_zero, 0.0, jnp.where(is_small, modified_x6, original_x6))
+    # x6 = x ** 2
+    x6 = x
     return x6
     
 def potential(
@@ -33,12 +36,13 @@ def potential(
         **kwargs,
 ):
     x = x[..., :, None, :] - x[..., None, :, :]
-    x = (x ** 2).sum(-1) + EPSILON
+    x = jax.nn.relu((x ** 2).sum(-1)) + EPSILON
     x = x ** 0.5
-
     _x6 = x6(x)
-    energy = (0.5 * epsilon / tau) \
-        * (_x6 ** 2 - 2 * _x6)
+
+    # energy = (0.5 * epsilon / tau) \
+    #     * (_x6 ** 2 - 2 * _x6)
+    energy = x ** 2
     return energy
 
 def cos(t):
@@ -60,31 +64,43 @@ def time_dependent_potential(
         x, 
         epsilon=1.0,
         tau=1.0,
+        r=1.0,
         time=0.0,
         schedule_gaussian=None,
-        schedule12 = None,
-        schedule6 = None,
+        schedule6=None,
+        schedule12=None,
         log_sigma=None,
 
 ):
-    # gaussian_potential = jax.scipy.stats.norm.logpdf(x, scale=scale).sum(-1).sum(-1).mean()
-
     gaussian_potential = -CenteredNormal(log_sigma).log_prob(x).sum(-1).sum(-1).mean()
-    gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
+    # gaussian_potential = (1 - schedule_gaussian(time)) * gaussian_potential
+
+    # x = x[..., :, None, :] - x[..., None, :, :]
+    # x = jax.nn.relu((x ** 2).sum(-1))
+    # x = x ** 0.5
+    # _x6 = x6(x)
+
+    # term6 = -(epsilon / tau) * _x6
+    # term12 = (0.5 * epsilon / tau) * (_x6 ** 2)
+
+    
+    # # term6 = term6 * schedule6(time)
+    # # term12 = term12 * schedule12(time)
+    # energy = term6 + term12
+    # energy = energy + gaussian_potential
+    # return energy
     
     x = x[..., :, None, :] - x[..., None, :, :]
-    x = (x ** 2).sum(-1) + EPSILON
+    x = jax.nn.relu((x ** 2).sum(-1) + EPSILON)
     x = x ** 0.5
-    x = x.reshape(*x.shape[:-2], -1)
+    # _x6 = x6(x)
+    _x6 = x
 
-    _x6 = x6(x)
-    term6 = -(epsilon / tau) * _x6
-    term12 = (0.5 * epsilon / tau) * (_x6 ** 2)
-    term6 = term6 * schedule6(time)
-    term12 = term12 * schedule12(time)
-    energy = term6 + term12
-    energy = energy + gaussian_potential
-    return energy
+    energy = (_x6 ** 2) # * (_x6 ** 2 - 2 * _x6)
+        
+    jax.debug.print("{x}, {y}", x=gaussian_potential.mean(), y=energy.mean())
+    return energy + gaussian_potential
+    # return gaussian_potential
 
 
 from typing import Callable, NamedTuple, Optional
@@ -113,8 +129,8 @@ class OverdampedLangevinDynamics(NamedTuple):
             position: jnp.ndarray, 
             delta_S: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 1e-3,
-            temperature: float = 1e-3,
+            epsilon: float = 1.0,
+            temperature: float = 0.0,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -127,13 +143,12 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
-        
         # compose potential energy
         potential = lambda x: self.potential(x, time=time).sum()
 
         # compute force
         force = -jax.grad(potential)(position)
-        
+    
         # sample noise
         eta = jax.random.normal(key, shape=position.shape)
         
@@ -150,7 +165,7 @@ class OverdampedLangevinDynamics(NamedTuple):
             (eta ** 2).sum(-1).sum(-1)
             - (eta_tilde ** 2).sum(-1).sum(-1)
         ) 
-                
+        
         return position, delta_S
     
     def __call__(
@@ -207,7 +222,6 @@ def compute_log_w(schedules, sampler_params, key):
     )
     
     x, delta_S = sampler(x, key=key)
-    
     log_w = -potential(x).sum(-1).sum(-1) + CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1) + delta_S
     return log_w
 
@@ -221,16 +235,15 @@ def run():
     key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
     from lean.schedules import SinRBFSchedule
     schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
-    schedule6 = SinRBFSchedule.init(key_a, 100)
-    schedule12 = SinRBFSchedule.init(key_b, 100)
-    schedules = [schedule_gaussian, schedule6, schedule12]
+    schedule_6 = SinRBFSchedule.init(key_a, 100)
+    schedule_12 = SinRBFSchedule.init(key_b, 100)
+    schedules = [schedule_gaussian, schedule_6, schedule_12]
 
     import optax
-    optimizer = optax.adam(1e-3)
+    optimizer = optax.adam(1e-5)
     opt_state = optimizer.init(schedules)
     sampler_args = {
         'step_size': 0.01,
-        'time': 1.0,
     }
     sampler_args = FrozenDict(sampler_args)
 
@@ -241,9 +254,10 @@ def run():
             schedules, sampler_args, subkey,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
-        schedules = optax.apply_updates(schedules, updates)
+        # schedules = optax.apply_updates(schedules, updates)
         return schedules, opt_state, key
-
+    
+    
     for idx in range(10000000):
         schedules, opt_state, key = step(schedules, opt_state, key)
         
