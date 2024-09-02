@@ -18,6 +18,7 @@ class Schedule(NamedTuple):
 
 class SinRBFSchedule(Schedule):
     params: Mapping
+    base: str = "linear"
 
     def __call__(self, time: float) -> float:
         gamma = self.params['gamma']
@@ -28,7 +29,12 @@ class SinRBFSchedule(Schedule):
         time = jnp.exp(-time)
         time = (time * self.params['coefficient']).sum()
         time = jnp.sin(linear * (math.pi)) * time
-        time = time + linear
+        if self.base == "linear":
+            time = time + linear
+        elif self.base == "ones":
+            time = time + 1
+        elif self.base == "zeros":
+            time = time
         return time
     
     @classmethod
@@ -36,13 +42,4 @@ class SinRBFSchedule(Schedule):
         gamma = (1 / steps) * jnp.ones(steps)
         coefficient = jax.random.normal(key, (steps,)) * 1e-1
         return cls({'gamma': gamma, 'coefficient': coefficient})
-
-
-        
-
-
-
-
-
-
 

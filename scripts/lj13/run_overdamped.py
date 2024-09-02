@@ -17,12 +17,18 @@ N_PARTICLES = 13
 N_DIM = 3
 EPSILON = 1e-5
 
-def x6(x, cutoff=0.5):
-    is_small = (x < cutoff)
-    x6_at_cutoff = cutoff ** (-6)
-    modified_x6 = jnp.exp(cutoff - x) * x6_at_cutoff
-    original_x6 = (x + EPSILON) ** (-6)
-    x6 = jnp.where(is_small, modified_x6, original_x6)
+def x6(x, lower=0.4, upper=0.5):
+    # is_small = (x < cutoff)
+    # x6_at_cutoff = cutoff ** (-6)
+    # modified_x6 = jnp.exp(cutoff - x) * x6_at_cutoff
+    # original_x6 = (x + EPSILON) ** (-6)
+    # x6 = jnp.where(is_small, modified_x6, original_x6)
+    
+    is_small = (x < upper)
+    x_offset = (x - upper) * (upper - lower) / upper + upper
+    x = jnp.where(is_small, x_offset, x)
+    x6 = (x + EPSILON) ** (-6)
+    
     return x6
     
 def potential(
@@ -113,8 +119,8 @@ class OverdampedLangevinDynamics(NamedTuple):
             position: jnp.ndarray, 
             delta_S: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 1e-3,
-            temperature: float = 1e-3,
+            epsilon: float = 1e-5,
+            temperature: float = 1e-5,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -207,7 +213,6 @@ def compute_log_w(schedules, sampler_params, key):
     )
     
     x, delta_S = sampler(x, key=key)
-    
     log_w = -potential(x).sum(-1).sum(-1) + CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1) + delta_S
     return log_w
 
@@ -223,6 +228,9 @@ def run():
     schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
     schedule6 = SinRBFSchedule.init(key_a, 100)
     schedule12 = SinRBFSchedule.init(key_b, 100)
+    schedule_epsilon = SinRBFSchedule.init(key_c, 100, base="ones")
+    schedlue_temperature = SinRBFSchedule.init(key_c, 100, base="ones")
+    
     schedules = [schedule_gaussian, schedule6, schedule12]
 
     import optax
