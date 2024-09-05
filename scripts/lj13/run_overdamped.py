@@ -13,7 +13,7 @@ from scripts.dw2.run_ld import N_PARTICLES
 
 
 N_SAMPLES = 100
-N_PARTICLES = 13
+N_PARTICLES = 55
 N_DIM = 3
 EPSILON = 1e-5
 
@@ -111,6 +111,8 @@ class OverdampedLangevinDynamics(NamedTuple):
     """
         
     potential: Callable
+    epsilon: Callable
+    temperature: Callable
     step_size: float
     time: float = 1.0
     
@@ -119,8 +121,6 @@ class OverdampedLangevinDynamics(NamedTuple):
             position: jnp.ndarray, 
             delta_S: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 1e-5,
-            temperature: float = 1e-5,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -133,9 +133,12 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
-        
         # compose potential energy
         potential = lambda x: self.potential(x, time=time).sum()
+        
+        # get epsilon and temperature
+        epsilon = self.epsilon(time) ** 2
+        temperature = self.temperature(time) ** 2
 
         # compute force
         force = -jax.grad(potential)(position)
@@ -194,7 +197,7 @@ class OverdampedLangevinDynamics(NamedTuple):
         return position, delta_S
     
 def compute_log_w(schedules, sampler_params, key):
-    schedule_gaussian, schedule6, schedule12 = schedules
+    schedule_gaussian, schedule6, schedule12, schedule_epsilon, schedule_temperature = schedules
     key, key_x = jax.random.split(key, 2)
     x = CenteredNormal(0.0).sample(key_x, (N_SAMPLES, N_PARTICLES, N_DIM))
     h = jnp.zeros((N_SAMPLES, N_PARTICLES, N_DIM))
@@ -209,6 +212,8 @@ def compute_log_w(schedules, sampler_params, key):
     
     sampler = OverdampedLangevinDynamics(
         potential=_time_dependent_potential,
+        epsilon=lambda t: schedule_epsilon(t) * 1e-5,
+        temperature=lambda t: schedule_temperature(t) * 1e-,
         **sampler_params,
     )
     
@@ -231,16 +236,21 @@ def run():
     schedule_epsilon = SinRBFSchedule.init(key_c, 100, base="ones")
     schedlue_temperature = SinRBFSchedule.init(key_c, 100, base="ones")
     
-    schedules = [schedule_gaussian, schedule6, schedule12]
+    schedules = [schedule_gaussian, schedule6, schedule12, schedule_epsilon, schedlue_temperature]
 
     import optax
-    optimizer = optax.adam(1e-3)
+    optimizer = optax.chain(
+        optax.clip(1.0),
+        optax.adam(1e-4),
+    )
+    
     opt_state = optimizer.init(schedules)
     sampler_args = {
         'step_size': 0.01,
         'time': 1.0,
     }
     sampler_args = FrozenDict(sampler_args)
+    
 
     @jax.jit
     def step(schedules, opt_state, key):
