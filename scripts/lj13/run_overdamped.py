@@ -116,12 +116,11 @@ class OverdampedLangevinDynamics(NamedTuple):
     step_size: float
     time: float = 1.0
     
-    def step(
+    
+    def drift(
             self, 
-            position: jnp.ndarray, 
-            delta_S: float,
-            key: jax.random.PRNGKey,
-            time: float = 0.0,
+            time,
+            state,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
 
@@ -133,6 +132,8 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
+        position, delta_S = state
+        
         # compose potential energy
         potential = lambda x: self.potential(x, time=time).sum()
         
