@@ -29,25 +29,6 @@ class PathProbabilityIntegrator(ThermostatedIntegrator):
     def ratio(self, value):
         self.setGlobalVariableByName("log_path_probability_ratio", value)
 
-    def step(self, n_steps):
-        """Propagate the system using the integrator.
-        This method returns the current log path probability ratio and resets it to 0.0 afterwards.
-
-        Parameters
-        ----------
-        n_steps : int
-            The number of steps
-
-        Returns
-        -------
-        ratio : float
-            The logarithmic path probability ratio summed over n_steps steps.
-        """
-        self.ratio = 0.0
-        super().step(n_steps)
-        ratio = self.ratio
-        return ratio
-
 class OverdampedLangevinIntegrator(PathProbabilityIntegrator):
     """Overdamped Langevin Dynamics"""
 

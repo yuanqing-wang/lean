@@ -1,33 +1,33 @@
 import abc
 from typing import NamedTuple, Mapping
 import math
-import jax
-from jax import numpy as jnp
+import torch
 
-class Schedule(NamedTuple):
-    params: Mapping
 
-    @abc.abstractmethod
-    def __call__(self, time: float) -> float:
-        raise NotImplementedError
-    
-    @classmethod
-    @abc.abstractmethod
-    def init(cls, **kwargs) -> 'Schedule':
-        raise NotImplementedError
-
-class SinRBFSchedule(Schedule):
-    params: Mapping
-
-    def __call__(self, time: float) -> float:
-        gamma = self.params['gamma']
-        mu = jnp.linspace(0, 1, len(gamma))
+class SinRBFSchedule(torch.nn.Module):
+    def __init__(
+        self,
+        steps: int,
+        base: str="linear",
+    ):
+        super().__init__()
+        gamma = steps * torch.ones(steps)
+        coefficient = torch.randn(steps) * 1e-2
+        self.gamma = torch.nn.Parameter(gamma)
+        self.coefficient = torch.nn.Parameter(coefficient)
+        self.base = base
+        
+    def forward(
+        self,
+        time: float,
+    ):
+        mu = torch.linspace(0, 1, len(self.gamma))
         linear = time
         time = time - mu
-        time = jax.nn.softplus(gamma) * (time ** 2)
-        time = jnp.exp(-time)
-        time = (time * self.params['coefficient']).sum()
-        time = jnp.sin(linear * (math.pi)) * time
+        time = torch.nn.functional.softplus(self.gamma) * (time ** 2)
+        time = torch.exp(-time)
+        time = (time * self.coefficient).sum()
+        time = torch.sin(linear * (math.pi)) * time
         if self.base == "linear":
             time = time + linear
         elif self.base == "ones":
@@ -35,13 +35,55 @@ class SinRBFSchedule(Schedule):
         elif self.base == "zeros":
             time = time
         return time
-    
-    @classmethod
-    def init(cls, key:jax.random.PRNGKey, steps: int, base: str="linear") -> 'Schedule': 
-        gamma = (1 / steps) * jnp.ones(steps)
-        coefficient = jax.random.normal(key, (steps,)) * 1e-1
-        initialized = cls({'gamma': gamma, 'coefficient': coefficient})
-        initialized.__class__.base = base
-        return initialized
-        
 
+class MeanFieldSinRBFSchedule(torch.nn.Module):
+    def __init__(
+        self,
+        steps: int,
+        base: str="linear",
+        log_sigma: float=-3,
+    ):
+        super().__init__()
+        gamma = steps * torch.ones(steps)
+        coefficient = torch.randn(steps) * 1e-2
+        self.gamma_mu = torch.nn.Parameter(gamma)
+        self.coefficient_mu = torch.nn.Parameter(coefficient)
+        self.gamma_log_sigma = torch.nn.Parameter(torch.ones_like(gamma) * log_sigma)
+        self.coefficient_log_sigma = torch.nn.Parameter(torch.randn_like(coefficient) * 1e-2)
+        self.base = base
+
+    @property
+    def gamma(self):
+        return torch.distributions.Normal(
+            self.gamma_mu,
+            self.gamma_log_sigma.exp(),
+        )
+        
+    
+    @property
+    def coefficient(self):
+        return torch.distributions.Normal(
+            self.coefficient_mu,
+            self.coefficient_log_sigma.exp(),
+        )
+    
+    def forward(
+        self,
+        time: float,
+        gamma: torch.Tensor,
+        coefficient: torch.Tensor,
+    ):
+        mu = torch.linspace(0, 1, len(gamma))
+        linear = time
+        time = time - mu
+        time = torch.nn.functional.softplus(gamma) * (time ** 2)
+        time = torch.exp(-time)
+        time = (time * coefficient).sum()
+        time = torch.sin(linear * (math.pi)) * time
+        if self.base == "linear":
+            time = time + linear
+        elif self.base == "ones":
+            time = time + 1
+        elif self.base == "zeros":
+            time = time
+        return time
