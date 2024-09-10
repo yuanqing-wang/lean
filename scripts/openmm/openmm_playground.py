@@ -34,7 +34,7 @@ def perturb(system, context, k2, k4):
     force.updateParametersInContext(context)
 
 def run():
-    integrator = OverdampedLangevinIntegrator(1, 1.0, 0.01)
+    integrator = OverdampedLangevinIntegrator(1, 1.0, 0.1)
     system = dw2()
     context = mm.Context(system, integrator, mm.Platform.getPlatformByName('Reference'))
     position = np.random.randn(2, 3)

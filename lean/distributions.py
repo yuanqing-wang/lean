@@ -47,7 +47,7 @@ class RadialLogNormal2D(NamedTuple):
         return log_prob
 
 
-class CenteredNormal(NamedTuple):
+class CenteredNormal(NamedTuple): 
     log_sigma: jnp.ndarray
     
     def sample(self, key, shape):

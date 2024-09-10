@@ -41,15 +41,17 @@ class MeanFieldSinRBFSchedule(torch.nn.Module):
         self,
         steps: int,
         base: str="linear",
-        log_sigma: float=-3,
+        log_sigma: float=-5,
     ):
         super().__init__()
         gamma = steps * torch.ones(steps)
-        coefficient = torch.randn(steps) * 1e-2
+        coefficient = torch.randn(steps) * 1e-3
         self.gamma_mu = torch.nn.Parameter(gamma)
         self.coefficient_mu = torch.nn.Parameter(coefficient)
         self.gamma_log_sigma = torch.nn.Parameter(torch.ones_like(gamma) * log_sigma)
-        self.coefficient_log_sigma = torch.nn.Parameter(torch.randn_like(coefficient) * 1e-2)
+        # self.gamma_log_sigma = torch.ones_like(gamma) * log_sigma
+        self.coefficient_log_sigma = torch.nn.Parameter(torch.ones_like(coefficient) * log_sigma)
+        # self.coefficient_log_sigma = torch.ones_like(coefficient) * log_sigma
         self.base = base
 
     @property
