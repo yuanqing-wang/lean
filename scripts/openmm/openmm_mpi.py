@@ -1,6 +1,3 @@
-from mimetypes import init
-from networkx import center
-import lean
 from lean.openmm import OverdampedLangevinIntegrator
 from lean.schedules import MeanFieldSinRBFSchedule
 import openmm as mm
@@ -9,6 +6,13 @@ import torch
 import math
 import copy
 from multiprocessing import Pool
+
+from mpi4py import MPI
+
+comm = MPI.COMM_WORLD
+size = comm.Get_size()
+rank = comm.Get_rank()
+
 
 class CenteredNormal(torch.nn.Module):
     def __init__(self, log_sigma, particles, dimension=3):
@@ -95,10 +99,8 @@ class Policy(torch.nn.Module):
     def __init__(
         self,
         system: mm.System,
-        batch_size: int = 10,
     ):
         super().__init__()
-        self.batch_size = batch_size
         self.centered_normal = CenteredNormal(torch.tensor(0.0), 2)
         self.system = system
         self.schedules = torch.nn.ModuleDict(
@@ -143,37 +145,57 @@ class Policy(torch.nn.Module):
         ratio = integrator.ratio
         return energy, ratio
         
-    def trial(self):
-        samples, log_p_batch = zip(*[self.sample() for _ in range(self.batch_size)])
-        coefficients = [[self.get_coefficient(time, sampled) for time in torch.linspace(0, 1, 10)] for sampled in samples]
-        positions = [self.centered_normal.sample().detach().numpy() for _ in range(self.batch_size)]
-        systems = [copy.deepcopy(self.system) for _ in range(self.batch_size)]
-        energies, ratios = zip(*Pool().starmap(self.integration, zip(positions, coefficients, systems, [_get_original(system) for system in systems])))
-        energies_initial = [self.centered_normal.log_prob(torch.tensor(position)).sum() for position in positions]
-        log_w_batch = [-energy + ratio + energy_initial for energy, ratio, energy_initial in zip(energies, ratios, energies_initial)]
-        return torch.stack(log_w_batch), torch.stack(log_p_batch)
+    def trial(self, sample):
+        coefficients = [self.get_coefficient(time, sample) for time in torch.linspace(0, 1, 10)]
+        position = self.centered_normal.sample().numpy()
+        system = copy.deepcopy(self.system)
+        original_parameters = _get_original(system)
+        energy, ratio = self.integration(position, coefficients, system, original_parameters)
+        energy_initial = self.centered_normal.log_prob(position).sum()
+        log_w = -energy + ratio + energy_initial
+        return log_w
             
-
 def run():
-    BATCH_SIZE = 100
-    system = dw2()
-    policy = Policy(system, BATCH_SIZE)
+    if rank == 0:
+        system = dw2()
+        policy = Policy(system)
+        optimizer = torch.optim.Adam(
+            policy.parameters(),
+            lr=1e-5,
+        )
+        sampled, _ = policy.sample()
+        base_log_w = policy.trial(sample=sampled)
+    else:
+        policy = None
+        
+    policy = comm.bcast(policy, root=0)
     
-    optimizer = torch.optim.Adam(
-        policy.parameters(),
-        lr=1e-5,
-    )
+    for _ in range(10000000):    
+        if rank == 0:
+            sampled, log_p = zip(*[policy.sample() for _ in range(size)])
+        else:
+            sampled, log_p = None, None
+        sampled = comm.scatter(sampled, root=0)
+        
+        log_w = policy.trial(sample=sampled)
+        log_w = comm.gather(log_w, root=0)
+        
+        if rank == 0:
+            optimizer.zero_grad()
+            # log_w, log_p = zip(*results)
+            log_w = torch.stack(log_w)
+            log_p = torch.stack(log_p)
+            ess = 1 / (log_w.softmax(-1) ** 2).sum()            
+            reward = (log_w.exp() - base_log_w.exp()) * log_p
+            clipped_reward = torch.minimum(
+                reward,
+                torch.clip(reward, 0.8 * reward, 1.2 * reward),
+            )
+            loss = -clipped_reward.mean()            
+            print(ess.item(), loss.item())
+            loss.backward()
+            optimizer.step()
     
-    for _ in range(10000000000):
-        optimizer.zero_grad()
-        log_w, log_p = policy.trial()
-        ess = 1 / (log_w.softmax(-1) ** 2).sum()
-        loss = -(log_w.exp() * log_p).mean()
-        # loss = -ess * log_p.mean()
-        print(ess, loss, flush=True)
-        loss.backward()
-        optimizer.step()
-
 
 if __name__ == '__main__':
     run()
