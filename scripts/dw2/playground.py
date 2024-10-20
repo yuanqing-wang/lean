@@ -8,11 +8,12 @@ from jax import numpy as jnp
 import numpy as onp
 import math
 from lean.distributions import CenteredNormal
+from lean.samplers import OverdampedLangevinDynamics
 from flax.core import FrozenDict
 from scripts.dw2.run_ld import N_PARTICLES
 
 
-N_SAMPLES = 100
+N_SAMPLES = 10
 N_PARTICLES = 4
 N_DIM = 2
 
@@ -114,47 +115,35 @@ def compute_log_w(schedules, sampler_params, key):
     log_w = -ut +u0 + delta_S
     return log_w
 
-def loss_fn(schedules, sampler_params, key):
-    log_w = compute_log_w(schedules, sampler_params, key)
-    w = jax.nn.logsumexp(log_w)
-    return -w.mean()
-
 def run():
-    key = jax.random.PRNGKey(1984)
-    key_gaussian, key_a, key_b, key_c = jax.random.split(key, 4)
-    from lean.schedules import SinRBFSchedule
-    schedule_gaussian = SinRBFSchedule.init(key_gaussian, 100)
-    schedule_a = SinRBFSchedule.init(key_a, 100)
-    schedule_b = SinRBFSchedule.init(key_b, 100)
-    schedule_c = SinRBFSchedule.init(key_c, 100)
-    schedules = [schedule_gaussian, schedule_a, schedule_b, schedule_c]
-
-    import optax
-    optimizer = optax.adam(1e-4)
-    opt_state = optimizer.init(schedules)
     sampler_args = {
-        'step_size': 1e-2,
+        'step_size': 1e-5,
         'time': 1.0,
     }
+    num_steps = 100
     sampler_args = FrozenDict(sampler_args)
-
-    @jax.jit
-    def step(schedules, opt_state, key):
-        key, subkey = jax.random.split(key)
-        loss, grads = jax.value_and_grad(loss_fn)(
-            schedules, sampler_args, subkey,
-        )
-        updates, opt_state = optimizer.update(grads, opt_state)
-        schedules = optax.apply_updates(schedules, updates)
-        return schedules, opt_state, key
-
-    for idx in range(10000000):
-        schedules, opt_state, key = step(schedules, opt_state, key)
-        
-        if idx % 1000 == 0:
-            # eval
-            log_w = compute_log_w(schedules, sampler_args, key)
-            print(f'ESS: {ess(log_w)}')
+    sampler = OverdampedLangevinDynamics(
+        potential=potential,
+        **sampler_args,
+    )
+    x = CenteredNormal(0.0).sample(jax.random.PRNGKey(0), (N_SAMPLES, N_PARTICLES, N_DIM))
+    
+    keys = jax.random.split(jax.random.PRNGKey(2666), num_steps)
+    distances = []
+    for idx in range(num_steps):
+        x, delta_S = sampler(x, key=keys[idx])
+        distance = jnp.linalg.norm(x, axis=-1)
+        distances.append(distance)
+    distances = jnp.stack(distances, axis=0)
+    distances = distances.swapaxes(0, 1)
+    print(distances.shape)
+    
+    from matplotlib import pyplot as plt
+    plt.plot(distances[0])
+    plt.savefig("playground.png")  
+    
+    
+    
         
 if __name__ == '__main__':
     run()

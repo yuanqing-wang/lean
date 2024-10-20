@@ -267,3 +267,102 @@ class LangevinDynamics(NamedTuple):
         position, momentum, delta_S = state
         return position, momentum, delta_S
     
+class OverdampedLangevinDynamics(NamedTuple):
+    """Overdamped Langevin Dynamics.
+
+    Parameters
+    ----------
+    potential : Callable
+        Energy function.
+
+    integrator : Callable
+        Integrator function.
+
+    steps: int
+        Number of steps to ta
+        
+    """
+        
+    potential: Callable
+    step_size: float
+    time: float = 1.0
+    
+    def step(
+            self, 
+            position: jnp.ndarray, 
+            delta_S: float,
+            key: jax.random.PRNGKey,
+            epsilon: float = 1e-2,
+            temperature: float = 1.0,
+            time: float = 0.0,
+    ):
+        """Run the Hamiltonian Monte Carlo algorithm.
+
+        Parameters
+        ----------
+        position : jnp.ndarray
+            Initial position.
+
+        momentum : jnp.ndarray
+            Initial momentum.
+        """
+        
+        # compose potential energy
+        potential = lambda x: self.potential(x, time=time).sum()
+
+        # compute force
+        force = -jax.grad(potential)(position)
+        
+        # sample noise
+        eta = jax.random.normal(key, shape=position.shape)
+        
+        position = position \
+            + epsilon * force + jnp.sqrt(2 * epsilon * temperature) * eta
+        
+        new_force = -jax.grad(potential)(position)
+        eta_tilde = jnp.sqrt(0.5 * epsilon / temperature) * (
+            force + new_force
+        ) - eta
+                
+        # compute delta S
+        delta_S = delta_S + 0.5 * (
+            (eta ** 2).sum(-1).sum(-1)
+            - (eta_tilde ** 2).sum(-1).sum(-1)
+        ) 
+        
+        return position, delta_S
+    
+    def __call__(
+            self,
+            position: jnp.ndarray,
+            key: jax.random.PRNGKey,
+    ):
+        """Run the Hamiltonian Monte Carlo algorithm.
+
+        Parameters
+        ----------
+        position : jnp.ndarray
+            Initial position.
+
+        momentum : jnp.ndarray
+            Initial momentum.
+        """        
+        # split keys
+        steps = int(self.time / self.step_size)
+        keys = jax.random.split(key, steps)
+        times = jnp.linspace(0, 1, steps)
+        
+        # initialize state
+        state = (position, jnp.zeros(len(position)))
+
+        # run leapfrog integration
+        state = jax.lax.fori_loop(
+            0, steps, 
+            lambda i, state: self.step(*state, time=times[i], key=keys[i]), 
+            state,
+        )
+
+        # unpack
+        position, delta_S = state
+        return position, delta_S
+    
