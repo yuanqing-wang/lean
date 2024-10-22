@@ -8,12 +8,13 @@ from jax import numpy as jnp
 import numpy as onp
 import math
 from lean.distributions import CenteredNormal
+from lean.samplers import OverdampedLangevinDynamics
 from flax.core import FrozenDict
 from scripts.dw2.run_ld import N_PARTICLES
 
 
 N_SAMPLES = 100
-N_PARTICLES = 4
+N_PARTICLES = 2
 N_DIM = 2
 
 def potential(
@@ -108,9 +109,7 @@ def compute_log_w(schedules, sampler_params, key):
     
     x, delta_S = sampler(x, key=key)
     ut = potential(x).sum(-1).sum(-1)
-    u0 = -CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1)
-    jax.debug.print("{ut}, {u0}, {delta_S}", ut=ut.mean(), u0=u0.mean(), delta_S=delta_S.mean())
-    
+    u0 = -CenteredNormal(0.0).log_prob(x).sum(-1).sum(-1)    
     log_w = -ut +u0 + delta_S
     return log_w
 
@@ -135,6 +134,7 @@ def run():
     sampler_args = {
         'step_size': 1e-2,
         'time': 1.0,
+        'temperature': 1e-2,
     }
     sampler_args = FrozenDict(sampler_args)
 
