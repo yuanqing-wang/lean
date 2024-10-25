@@ -286,14 +286,14 @@ class OverdampedLangevinDynamics(NamedTuple):
     potential: Callable
     step_size: float
     time: float = 1.0
+    temperature: float = 1.0
     
     def step(
             self, 
             position: jnp.ndarray, 
             delta_S: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 1e-2,
-            temperature: float = 1.0,
+            epsilon: float = 1e-3,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -306,6 +306,7 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
+        temperature = self.temperature
         
         # compose potential energy
         potential = lambda x: self.potential(x, time=time).sum()
