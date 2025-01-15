@@ -30,8 +30,9 @@ class OverdampedLangevinDynamics(NamedTuple):
             position: jnp.ndarray, 
             A: float,
             B: float,
+            loss: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 1e-2,
+            epsilon: float = 0.01,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -46,30 +47,31 @@ class OverdampedLangevinDynamics(NamedTuple):
         """
                 
         # compose potential energy
-        # potential = lambda x: self.potential(x, time=time).sum()
-        # biasing_energy = self.unbiasing_potential(position, time=time).sum()
-        energy = jax.vmap(self.potential, in_axes=(0, None))(position, time)
-
-        # compute force
-        force = -jax.grad(self.potential)(position, time=time)
-        unbiasing_force = jax.grad(self.unbiasing_potential)(position, time=time)
+        dx_u, dt_u = jax.grad(self.unbiasing_potential, argnums=(0, 1))(position, time)
+        dx_f, dt_f = jax.grad(self.potential, argnums=(0, 1))(position, time)
         
         # sample noise
         eta = jax.random.normal(key, shape=position.shape)
         
         # update position
         position = position \
-            + epsilon * force * self.step_size \
-            + unbiasing_force * self.step_size \
+            - epsilon * dx_u * self.step_size \
+            + dx_f * self.step_size \
             + jnp.sqrt(2 * epsilon) * eta * self.step_size
                         
         # update B                    
         B = B \
-            + (1 / epsilon) * (unbiasing_force ** 2).sum(-1).sum(-1) * self.step_size\
-            + jnp.sqrt(2 / epsilon) * self.step_size * (unbiasing_force * eta).sum(-1).sum(-1)
+            + (1 / epsilon) * (dx_f ** 2).sum(-1).sum(-1) * self.step_size \
+            + jnp.sqrt(2 / epsilon) * self.step_size * (dx_f * eta).sum(-1).sum(-1) \
+            + dt_u * self.step_size \
+            + (1 / epsilon) * dt_f * self.step_size
         
-        A = -energy - B
-        return position, A, B
+        # A = -energy - B
+        A = (1 / epsilon) * self.unbiasing_potential(position, time) - B
+        
+        loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
+        loss = loss.mean()
+        return position, A, B, loss
             
     def __call__(
             self,
@@ -92,21 +94,30 @@ class OverdampedLangevinDynamics(NamedTuple):
         times = jnp.linspace(0, 1, steps)
         
         # initialize state
-        state = (position, jnp.zeros(len(position)), jnp.zeros(len(position)))
+        state = (position, jnp.zeros(len(position)), jnp.zeros(len(position)), 0.0)
         
-        def step_fn(state, idx):
+        # def step_fn(state, idx):
+        #     state = self.step(*state, time=times[idx], key=keys[idx])
+        #     return state, state
+        # 
+        # _, states = jax.lax.scan(
+        #     step_fn,
+        #     state,
+        #     jnp.arange(steps),
+        # )
+        # 
+        # # unpack
+        # position, A, _ = states
+        # position = position.swapaxes(0, 1)
+        # A = A.swapaxes(0, 1)
+        # return position, A
+        
+        def step_fn(idx, state):
             state = self.step(*state, time=times[idx], key=keys[idx])
-            return state, state
+            return state
         
-        _, states = jax.lax.scan(
-            step_fn,
-            state,
-            jnp.arange(steps),
-        )
+        state = jax.lax.fori_loop(0, steps, step_fn, state)
+        return state
 
-        # unpack
-        position, A, _ = states
-        position = position.swapaxes(0, 1)
-        A = A.swapaxes(0, 1)
-        return position, A
+
     

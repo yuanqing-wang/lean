@@ -15,10 +15,10 @@ class SinRBF(NamedTuple):
         key: jax.random.PRNGKey,
         num_x: int,
         num_t: int,
-        std: float = 1e-2,
+        std: float = 1e-10,
         max_distance: float = 10.0,
     ):
-        gamma = jnp.ones((num_x, num_t)) * std
+        gamma = jnp.ones((num_x, num_t)) # * std
         coefficient = jax.random.normal(key, (num_x, num_t)) * std
         mu_x = jnp.linspace(0, max_distance, num_x)
         mu_t = jnp.linspace(0, 1, num_t)

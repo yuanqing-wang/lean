@@ -10,13 +10,12 @@ import numpy as onp
 import math
 from lean.samplers import OverdampedLangevinDynamics
 from lean.unbiasing import SinRBF
-from lean.loss import loss
 from flax.core import FrozenDict
 
 
-N_SAMPLES = 100
-N_PARTICLES = 2
-N_DIM = 2
+N_SAMPLES = 1000
+N_PARTICLES = 4
+N_DIM = 3
 
 def potential(
         x, 
@@ -55,36 +54,29 @@ def ess(log_w):
     ess = 1 / (w ** 2).sum()
     return ess
 
+def loss_fn(unbiasing_potential, position, key):
+    integrator = OverdampedLangevinDynamics(
+        annealing_potential,
+        unbiasing_potential,
+        step_size=0.01,
+    )
+    position, A, B, loss = integrator(position, key)
+    jax.debug.print("{position}, {A}", position=position, A=A)
+    return loss
+
 def run():
-    global loss
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
     unbiasing_potential = SinRBF.init(subkey, 10, 10)
 
-    optimizer = optax.adam(1e-5)
+    optimizer = optax.adam(1e-3)
     optimizer_state = optimizer.init(unbiasing_potential)
     
-    loss = jax.jit(loss)
-    
     for _ in range(1000):
-        
         key, key0, key1 = jax.random.split(key, 3)
-        integrator = OverdampedLangevinDynamics(
-            annealing_potential,
-            unbiasing_potential,
-            step_size=0.01,
-        )
         position = jax.random.normal(key0, (N_SAMPLES, N_PARTICLES, N_DIM))
-        position, A = integrator(position, key1)
-        
-        _loss, grad = jax.value_and_grad(loss)(
-            unbiasing_potential,
-            trajectory=position,
-            A=A,
-            time=jnp.linspace(0, 1, 100),
-        )
-        
-        print(_loss, ess(A[:, -1]))
+        loss, grad = jax.value_and_grad(loss_fn)(unbiasing_potential, position, key1)
+        jax.debug.print("{x}", x=loss)
         updates, optimizer_state = optimizer.update(grad, optimizer_state)
         unbiasing_potential = optax.apply_updates(unbiasing_potential, updates)
         
