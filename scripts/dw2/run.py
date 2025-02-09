@@ -13,7 +13,7 @@ from lean.unbiasing import SinRBF
 from flax.core import FrozenDict
 
 
-N_SAMPLES = 1000
+N_SAMPLES = 100
 N_PARTICLES = 4
 N_DIM = 3
 
@@ -59,15 +59,16 @@ def loss_fn(unbiasing_potential, position, key):
         annealing_potential,
         unbiasing_potential,
         step_size=0.01,
+        time=1.0,
     )
     position, A, B, loss = integrator(position, key)
-    jax.debug.print("{position}, {A}", position=position, A=A)
-    return loss
+    return loss, A
 
 def run():
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
     unbiasing_potential = SinRBF.init(subkey, 10, 10)
+    epsilon_schedule = SinRBF.init(subkey, 10, 10)
 
     optimizer = optax.adam(1e-3)
     optimizer_state = optimizer.init(unbiasing_potential)
@@ -75,8 +76,11 @@ def run():
     for _ in range(1000):
         key, key0, key1 = jax.random.split(key, 3)
         position = jax.random.normal(key0, (N_SAMPLES, N_PARTICLES, N_DIM))
-        loss, grad = jax.value_and_grad(loss_fn)(unbiasing_potential, position, key1)
-        jax.debug.print("{x}", x=loss)
+        loss = loss_fn(unbiasing_potential, position, key1)
+        
+        (loss, A), grad = jax.value_and_grad(loss_fn, has_aux=True)(unbiasing_potential, position, key1)
+        ESS = ess(A)
+        print(ESS, loss)
         updates, optimizer_state = optimizer.update(grad, optimizer_state)
         unbiasing_potential = optax.apply_updates(unbiasing_potential, updates)
         

@@ -32,7 +32,7 @@ class OverdampedLangevinDynamics(NamedTuple):
             B: float,
             loss: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 0.01,
+            epsilon: float = 5.0,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -45,10 +45,12 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
-                
+        position = jax.lax.stop_gradient(position)
+        time = time * jnp.ones(len(position))
+        
         # compose potential energy
-        dx_u, dt_u = jax.grad(self.unbiasing_potential, argnums=(0, 1))(position, time)
-        dx_f, dt_f = jax.grad(self.potential, argnums=(0, 1))(position, time)
+        dx_f, dt_f = jax.vmap(jax.grad(self.unbiasing_potential, argnums=(0, 1)))(position, time)
+        dx_u, dt_u = jax.vmap(jax.grad(self.potential, argnums=(0, 1)))(position, time)
         
         # sample noise
         eta = jax.random.normal(key, shape=position.shape)
@@ -59,18 +61,21 @@ class OverdampedLangevinDynamics(NamedTuple):
             + dx_f * self.step_size \
             + jnp.sqrt(2 * epsilon) * eta * self.step_size
                         
+                        
         # update B                    
         B = B \
             + (1 / epsilon) * (dx_f ** 2).sum(-1).sum(-1) * self.step_size \
-            + jnp.sqrt(2 / epsilon) * self.step_size * (dx_f * eta).sum(-1).sum(-1) \
+            + jnp.sqrt(2 / epsilon) * (self.step_size * (dx_f * eta)).sum(-1).sum(-1) \
             + dt_u * self.step_size \
             + (1 / epsilon) * dt_f * self.step_size
+                    
+        # A = -jax.vmap(self.potential)(position, time) - B
+        A = (1 / epsilon) * jax.vmap(self.unbiasing_potential)(position, time) - B
         
-        # A = -energy - B
-        A = (1 / epsilon) * self.unbiasing_potential(position, time) - B
+        _loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
+        _loss = _loss.mean()
+        loss = loss + _loss
         
-        loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
-        loss = loss.mean()
         return position, A, B, loss
             
     def __call__(
