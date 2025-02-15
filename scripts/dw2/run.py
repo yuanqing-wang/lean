@@ -14,8 +14,8 @@ from flax.core import FrozenDict
 
 
 N_SAMPLES = 100
-N_PARTICLES = 4
-N_DIM = 3
+N_PARTICLES = 2
+N_DIM = 2
 
 def potential(
         x, 
@@ -54,6 +54,7 @@ def ess(log_w):
     ess = 1 / (w ** 2).sum()
     return ess
 
+@jax.jit
 def loss_fn(unbiasing_potential, position, key):
     integrator = OverdampedLangevinDynamics(
         annealing_potential,
@@ -68,12 +69,11 @@ def run():
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
     unbiasing_potential = SinRBF.init(subkey, 10, 10)
-    epsilon_schedule = SinRBF.init(subkey, 10, 10)
 
     optimizer = optax.adam(1e-3)
     optimizer_state = optimizer.init(unbiasing_potential)
     
-    for _ in range(1000):
+    for _ in range(100000):
         key, key0, key1 = jax.random.split(key, 3)
         position = jax.random.normal(key0, (N_SAMPLES, N_PARTICLES, N_DIM))
         loss = loss_fn(unbiasing_potential, position, key1)
