@@ -13,8 +13,8 @@ from lean.unbiasing import SinRBF
 from flax.core import FrozenDict
 
 
-N_SAMPLES = 100
-N_PARTICLES = 2
+N_SAMPLES = 1000
+N_PARTICLES = 4
 N_DIM = 2
 
 def potential(
@@ -42,6 +42,28 @@ def potential(
     energy = jnp.where(is_zero, 0.0, energy).sum()
     return energy
 
+# from typing import NamedTuple
+# class Schedule(NamedTuple):
+#     k: jnp.ndarray
+#     b: jnp.ndarray
+    
+#     @classmethod
+#     def init(
+#         cls,
+#         key: jax.random.PRNGKey,
+#     ):
+#         k = jax.random.normal(key)
+#         b = jax.random.normal(key)
+#         return cls(k, b)
+    
+#     def __call__(self, x, time):
+#         position = time * self.k + self.b
+#         sin = jnp.sin(time * jnp.pi)
+#         return sin * 0.5 * ((x - position) ** 2).sum()
+
+# def potential(x):
+#     return 0.5 * ((x - 1) ** 2).sum()
+
 def gaussian_potential(x):
     return 0.5 * (x ** 2).sum()
 
@@ -63,12 +85,14 @@ def loss_fn(unbiasing_potential, position, key):
         time=1.0,
     )
     position, A, B, loss = integrator(position, key)
-    return loss, A
+    return loss, (A, position)
 
 def run():
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
     unbiasing_potential = SinRBF.init(subkey, 10, 10)
+    # unbiasing_potential = Schedule.init(subkey)
+    # unbiasing_potential = lambda x, t: 0.0
 
     optimizer = optax.adam(1e-3)
     optimizer_state = optimizer.init(unbiasing_potential)
@@ -76,9 +100,8 @@ def run():
     for _ in range(100000):
         key, key0, key1 = jax.random.split(key, 3)
         position = jax.random.normal(key0, (N_SAMPLES, N_PARTICLES, N_DIM))
-        loss = loss_fn(unbiasing_potential, position, key1)
         
-        (loss, A), grad = jax.value_and_grad(loss_fn, has_aux=True)(unbiasing_potential, position, key1)
+        (loss, (A, position)), grad = jax.value_and_grad(loss_fn, has_aux=True)(unbiasing_potential, position, key1)
         ESS = ess(A)
         print(ESS, loss)
         updates, optimizer_state = optimizer.update(grad, optimizer_state)

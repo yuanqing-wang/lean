@@ -46,7 +46,7 @@ class SinRBF(NamedTuple):
         x: jnp.ndarray,
         time: jnp.ndarray,
     ):
-        distances = ((x[..., :, None] - x[..., None, :]) ** 2).sum(-1) ** 0.5
+        distances = (((x[..., :, None] - x[..., None, :]) ** 2).sum(-1) + 1e-5) ** 0.5
         distances = distances.flatten()[:, None]
         energies = jax.vmap(partial(self._call_single, t=time))(distances)
         return energies.sum()

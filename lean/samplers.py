@@ -32,7 +32,7 @@ class OverdampedLangevinDynamics(NamedTuple):
             B: float,
             loss: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 5.0,
+            epsilon: float = 0.1,
             time: float = 0.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
@@ -46,6 +46,8 @@ class OverdampedLangevinDynamics(NamedTuple):
             Initial momentum.
         """
         position = jax.lax.stop_gradient(position)
+        A = jax.lax.stop_gradient(A)
+        B = jax.lax.stop_gradient(B)
         time = time * jnp.ones(len(position))
         
         # compose potential energy
@@ -59,13 +61,12 @@ class OverdampedLangevinDynamics(NamedTuple):
         position = position \
             - epsilon * dx_u * self.step_size \
             + dx_f * self.step_size \
-            + jnp.sqrt(2 * epsilon) * eta * self.step_size
-                        
+            + jnp.sqrt(2 * epsilon * self.step_size) * eta
                         
         # update B                    
         B = B \
             + (1 / epsilon) * (dx_f ** 2).sum(-1).sum(-1) * self.step_size \
-            + jnp.sqrt(2 / epsilon) * (self.step_size * (dx_f * eta)).sum(-1).sum(-1) \
+            + jnp.sqrt(2 * self.step_size / epsilon) * (dx_f * eta).sum(-1).sum(-1) \
             + dt_u * self.step_size \
             + (1 / epsilon) * dt_f * self.step_size
                     
@@ -75,7 +76,6 @@ class OverdampedLangevinDynamics(NamedTuple):
         _loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
         _loss = _loss.mean()
         loss = loss + _loss
-        
         return position, A, B, loss
             
     def __call__(
@@ -100,29 +100,29 @@ class OverdampedLangevinDynamics(NamedTuple):
         
         # initialize state
         state = (position, jnp.zeros(len(position)), jnp.zeros(len(position)), 0.0)
-        
-        # def step_fn(state, idx):
-        #     state = self.step(*state, time=times[idx], key=keys[idx])
-        #     return state, state
-        # 
-        # _, states = jax.lax.scan(
-        #     step_fn,
-        #     state,
-        #     jnp.arange(steps),
-        # )
-        # 
-        # # unpack
-        # position, A, _ = states
-        # position = position.swapaxes(0, 1)
-        # A = A.swapaxes(0, 1)
-        # return position, A
-        
+                
         def step_fn(idx, state):
             state = self.step(*state, time=times[idx], key=keys[idx])
             return state
         
         state = jax.lax.fori_loop(0, steps, step_fn, state)
         return state
+        
+
+        # def step_fn(state, idx):
+        #     state = self.step(*state, time=times[idx], key=keys[idx])
+        #     return state, state
+        
+        # _, states = jax.lax.scan(
+        #     step_fn,
+        #     state,
+        #     jnp.arange(steps),
+        # )
+        
+        # # unpack
+        # position, A, B, loss = states
+        # return position, A, B, loss
+        
 
 
     

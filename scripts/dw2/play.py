@@ -15,7 +15,7 @@ from lean.loss import loss
 from flax.core import FrozenDict
 
 
-N_SAMPLES = 10
+N_SAMPLES = 100
 N_PARTICLES = 2
 N_DIM = 2
 
