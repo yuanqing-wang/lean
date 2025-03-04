@@ -29,7 +29,7 @@ class SinRBF(NamedTuple):
         x: jnp.ndarray,
         t: jnp.ndarray,
     ):
-        original_t = t
+        t0 = t
         t = t - self.mu_t
         x = x - self.mu_x
         x = x[:, None]
@@ -38,8 +38,7 @@ class SinRBF(NamedTuple):
         r = jax.nn.softplus(self.gamma) * r
         r = jnp.exp(-r)
         r = (r * self.coefficient).sum()
-        sin = jnp.sin(original_t * jnp.pi)
-        return r * sin
+        return r # * jnp.sin(2 * jnp.pi * t0)
     
     def __call__(
         self,
@@ -50,6 +49,43 @@ class SinRBF(NamedTuple):
         distances = distances.flatten()[:, None]
         energies = jax.vmap(partial(self._call_single, t=time))(distances)
         return energies.sum()
+        
+        # return jnp.polyval(self.coefficient.flatten(), time)
+        # return (self.coefficient.mean() * time * x ** 2).sum()
+        
+        
+class NN(NamedTuple):
+    weights: jnp.ndarray
+    biases: jnp.ndarray
+    
+    @classmethod
+    def init(
+        cls,
+        key: jax.random.PRNGKey,
+        num_layers: int,
+        num_units: int,
+    ):
+        keys = jax.random.split(key, num_layers)
+        weights = [0.01 * jax.random.normal(keys[0], (3, num_units))] + [0.01 * jax.random.normal(k, (num_units, num_units)) for k in keys[1:]]
+        biases = [0.01 * jax.random.normal(k, (num_units, )) for k in keys]
+        return cls(weights, biases)
+        
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        time: jnp.ndarray,
+        T: jnp.ndarray,
+    ):
+        x = x.reshape(-1, 2)
+        x = jnp.concatenate([x, time], axis=-1)
+        for w, b in zip(self.weights, self.biases):
+            x = jax.nn.silu(x)
+            # x = jnp.dot(w, x) + b
+            x = x @ w + b
+        x = x.sum(-1, keepdims=True)
+        sin = jnp.sin(2 * jnp.pi * time.mean() / T)
+        return x * sin
+
         
         
     

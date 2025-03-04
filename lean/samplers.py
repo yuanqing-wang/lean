@@ -1,4 +1,3 @@
-from math import gamma
 import jax
 import jax.numpy as jnp
 from typing import Callable, NamedTuple, Optional
@@ -22,7 +21,7 @@ class OverdampedLangevinDynamics(NamedTuple):
         
     potential: Callable
     unbiasing_potential: Callable
-    step_size: float
+    steps: int
     time: float = 1.0
     
     def step(
@@ -31,9 +30,10 @@ class OverdampedLangevinDynamics(NamedTuple):
             A: float,
             B: float,
             loss: float,
+            time: float,
+            step_size: float,
             key: jax.random.PRNGKey,
-            epsilon: float = 0.1,
-            time: float = 0.0,
+            epsilon: float = 1.0,
     ):
         """Run the Hamiltonian Monte Carlo algorithm.
 
@@ -45,36 +45,47 @@ class OverdampedLangevinDynamics(NamedTuple):
         momentum : jnp.ndarray
             Initial momentum.
         """
-        position = jax.lax.stop_gradient(position)
-        A = jax.lax.stop_gradient(A)
-        B = jax.lax.stop_gradient(B)
-        time = time * jnp.ones(len(position))
+        time = time * jnp.ones((len(position), 1))
         
         # compose potential energy
-        dx_f, dt_f = jax.vmap(jax.grad(self.unbiasing_potential, argnums=(0, 1)))(position, time)
-        dx_u, dt_u = jax.vmap(jax.grad(self.potential, argnums=(0, 1)))(position, time)
+        # dx_f, dt_f = jax.vmap(jax.grad(self.unbiasing_potential, argnums=(0, 1)))(position, time)
+        # dx_u, dt_u = jax.vmap(jax.grad(self.potential, argnums=(0, 1)))(position, time)
         
+        dx_f, dt_f = jax.grad(lambda x, t: self.unbiasing_potential(x, t).sum(), argnums=(0, 1))(position, time)
+        dx_u, dt_u = jax.grad(lambda x, t: self.potential(x, t).sum(), argnums=(0, 1))(position, time)
+        
+        dt_f, dt_u = dt_f.squeeze(-1), dt_u.squeeze(-1)
+                
         # sample noise
         eta = jax.random.normal(key, shape=position.shape)
         
         # update position
         position = position \
-            - epsilon * dx_u * self.step_size \
-            + dx_f * self.step_size \
-            + jnp.sqrt(2 * epsilon * self.step_size) * eta
-                        
-        # update B                    
-        B = B \
-            + (1 / epsilon) * (dx_f ** 2).sum(-1).sum(-1) * self.step_size \
-            + jnp.sqrt(2 * self.step_size / epsilon) * (dx_f * eta).sum(-1).sum(-1) \
-            + dt_u * self.step_size \
-            + (1 / epsilon) * dt_f * self.step_size
-                    
-        # A = -jax.vmap(self.potential)(position, time) - B
-        A = (1 / epsilon) * jax.vmap(self.unbiasing_potential)(position, time) - B
+            - epsilon * dx_u * step_size \
+            + dx_f * step_size \
+            + jnp.sqrt(2 * epsilon * step_size) * eta
         
-        _loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
-        _loss = _loss.mean()
+        # position = jnp.sqrt(2 * epsilon * step_size) * eta
+                        
+        # update B                            
+        B = B \
+            + dt_u * step_size \
+            + (1 / epsilon) * dt_f * step_size \
+            + (1 / epsilon) * (dx_f ** 2).sum(-1).sum(-1) * step_size \
+            + jnp.sqrt(2 * step_size / epsilon) * (dx_f * eta).sum(-1).sum(-1)
+        
+        A = (1 / epsilon) * (self.unbiasing_potential(position, time).squeeze(-1)) - B
+
+        # _loss = jax.nn.softmax(A, 0) * (0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f)
+        #  _loss = _loss.sum() * step_size
+        # _loss = 0.5 * (dx_f ** 2).sum(-1).sum(-1) + dt_f
+        _loss = dt_f
+        _loss = _loss.mean() * step_size
+                
+        position = jax.lax.stop_gradient(position)
+        A = jax.lax.stop_gradient(A)
+        B = jax.lax.stop_gradient(B)
+                                
         loss = loss + _loss
         return position, A, B, loss
             
@@ -94,34 +105,29 @@ class OverdampedLangevinDynamics(NamedTuple):
             Initial momentum.
         """        
         # split keys
-        steps = int(self.time / self.step_size)
-        keys = jax.random.split(key, steps)
-        times = jnp.linspace(0, 1, steps)
+        steps = self.steps
+        keys = jax.random.split(key+1, steps)
+        times = jax.random.uniform(keys[-1], shape=(steps,)) * self.time
+        times = jnp.sort(times)
+        times = jnp.concatenate([times, jnp.array([self.time])])
+        # step_sizes = times[1:] - times[:-1]
+        step_size = self.time / steps
         
         # initialize state
         state = (position, jnp.zeros(len(position)), jnp.zeros(len(position)), 0.0)
                 
         def step_fn(idx, state):
-            state = self.step(*state, time=times[idx], key=keys[idx])
+            state = self.step(*state, time=times[idx], key=keys[idx], step_size=step_size)
             return state
         
-        state = jax.lax.fori_loop(0, steps, step_fn, state)
-        return state
+        state = jax.lax.fori_loop(0, steps, step_fn, state)                
         
-
-        # def step_fn(state, idx):
-        #     state = self.step(*state, time=times[idx], key=keys[idx])
-        #     return state, state
+        # for idx in range(steps):
+        #     state = step_fn(idx, state)
         
-        # _, states = jax.lax.scan(
-        #     step_fn,
-        #     state,
-        #     jnp.arange(steps),
-        # )
+        position, A, B, loss = state
+        return position, A, B, loss
         
-        # # unpack
-        # position, A, B, loss = states
-        # return position, A, B, loss
         
 
 

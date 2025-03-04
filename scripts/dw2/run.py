@@ -9,13 +9,13 @@ from jax import numpy as jnp
 import numpy as onp
 import math
 from lean.samplers import OverdampedLangevinDynamics
-from lean.unbiasing import SinRBF
+from lean.unbiasing import SinRBF, NN 
 from flax.core import FrozenDict
 
 
 N_SAMPLES = 1000
-N_PARTICLES = 4
-N_DIM = 2
+N_PARTICLES = 2
+N_DIM = 1
 
 def potential(
         x, 
@@ -39,7 +39,8 @@ def potential(
         + c * (x - d0) ** 4
     )
     
-    energy = jnp.where(is_zero, 0.0, energy).sum()
+    energy = jnp.where(is_zero, 0.0, energy)# .sum()
+    energy = energy.sum(-1).sum(-1, keepdims=True)
     return energy
 
 # from typing import NamedTuple
@@ -77,34 +78,35 @@ def ess(log_w):
     return ess
 
 @jax.jit
-def loss_fn(unbiasing_potential, position, key):
+def loss_fn(unbiasing_potential, position, key, time):
+    unbiasing_potential = partial(unbiasing_potential, T=time)
     integrator = OverdampedLangevinDynamics(
         annealing_potential,
         unbiasing_potential,
-        step_size=0.01,
-        time=1.0,
+        steps=100,
+        time=time,
     )
+    
     position, A, B, loss = integrator(position, key)
     return loss, (A, position)
 
 def run():
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
-    unbiasing_potential = SinRBF.init(subkey, 10, 10)
-    # unbiasing_potential = Schedule.init(subkey)
-    # unbiasing_potential = lambda x, t: 0.0
-
-    optimizer = optax.adam(1e-3)
+    # unbiasing_potential = SinRBF.init(subkey, 20, 20)
+    unbiasing_potential = NN.init(subkey, 3, 20)
+    optimizer = optax.adamw(1e-3, weight_decay=1e-4)
+    
     optimizer_state = optimizer.init(unbiasing_potential)
     
-    for _ in range(100000):
+    for idx in range(100000):
+        T = float(idx+1) / 100000
         key, key0, key1 = jax.random.split(key, 3)
         position = jax.random.normal(key0, (N_SAMPLES, N_PARTICLES, N_DIM))
-        
-        (loss, (A, position)), grad = jax.value_and_grad(loss_fn, has_aux=True)(unbiasing_potential, position, key1)
+        (loss, (A, position)), grad = jax.value_and_grad(loss_fn, has_aux=True)(unbiasing_potential, position, key1, time=T)
         ESS = ess(A)
         print(ESS, loss)
-        updates, optimizer_state = optimizer.update(grad, optimizer_state)
+        updates, optimizer_state = optimizer.update(grad, optimizer_state, params=unbiasing_potential)
         unbiasing_potential = optax.apply_updates(unbiasing_potential, updates)
         
 if __name__ == '__main__':
