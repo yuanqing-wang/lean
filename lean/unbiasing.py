@@ -66,7 +66,7 @@ class NN(NamedTuple):
         num_units: int,
     ):
         keys = jax.random.split(key, num_layers)
-        weights = [0.01 * jax.random.normal(keys[0], (2, num_units))] + [0.01 * jax.random.normal(k, (num_units, num_units)) for k in keys[1:]]
+        weights = [0.01 * jax.random.normal(keys[0], (3, num_units))] + [0.01 * jax.random.normal(k, (num_units, num_units)) for k in keys[1:]]
         biases = [0.01 * jax.random.normal(k, (num_units, )) for k in keys]
         return cls(weights, biases)
         

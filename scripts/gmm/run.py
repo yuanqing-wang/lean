@@ -38,7 +38,7 @@ def ess(log_w):
 
 @jax.jit
 def loss_fn(unbiasing_potential, position, key, time):
-    unbiasing_potential = partial(unbiasing_potential, T=time)
+    f0 = unbiasing_potential(position, jnp.zeros(len(position)))
     integrator = OverdampedLangevinDynamics(
         annealing_potential,
         unbiasing_potential,
@@ -46,7 +46,11 @@ def loss_fn(unbiasing_potential, position, key, time):
         time=time,
     )
     
-    position, A, B, loss = integrator(position, key)
+    position, A, B, loss = integrator(position, key, f0=f0)
+    f1 = unbiasing_potential(position, time * jnp.ones(len(position)))
+    f1 = (jax.nn.softmax(A, 0) * f1).sum()
+    f0 = f0.mean()
+    loss = loss + f0 - f1
     return loss, (A, position)
 
 def run():
@@ -66,9 +70,6 @@ def run():
         updates, optimizer_state = optimizer.update(grad, optimizer_state, params=unbiasing_potential)
         unbiasing_potential = optax.apply_updates(unbiasing_potential, updates)
         
-    import pickle
-    handle = open("unbiasing.pickle", "wb")
-    pickle.dump(unbiasing_potential, handle)
         
 if __name__ == '__main__':
     run()
