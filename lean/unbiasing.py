@@ -66,7 +66,7 @@ class NN(NamedTuple):
         num_units: int,
     ):
         keys = jax.random.split(key, num_layers)
-        weights = [0.01 * jax.random.normal(keys[0], (3, num_units))] + [0.01 * jax.random.normal(k, (num_units, num_units)) for k in keys[1:]]
+        weights = [0.01 * jax.random.normal(keys[0], (2, num_units))] + [0.01 * jax.random.normal(k, (num_units, num_units)) for k in keys[1:]]
         biases = [0.01 * jax.random.normal(k, (num_units, )) for k in keys]
         return cls(weights, biases)
         
@@ -74,17 +74,17 @@ class NN(NamedTuple):
         self,
         x: jnp.ndarray,
         time: jnp.ndarray,
-        T: jnp.ndarray,
     ):
-        x = x.reshape(-1, 2)
+        time = time[..., None]
         x = jnp.concatenate([x, time], axis=-1)
+        # x = jnp.concatenate([time, time, time], axis=-1)
         for w, b in zip(self.weights, self.biases):
             x = jax.nn.silu(x)
-            # x = jnp.dot(w, x) + b
             x = x @ w + b
-        x = x.sum(-1, keepdims=True)
-        sin = jnp.sin(2 * jnp.pi * time.mean() / T)
-        return x * sin
+        x = x.sum(-1)
+        # sin = jnp.sin(2 * jnp.pi * time.squeeze(-1))
+        # x = x * sin
+        return x
 
         
         
